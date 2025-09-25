@@ -29,9 +29,22 @@
 		75F5F0812E849B7700004CF8 /* NextBusUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = NextBusUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
+		75F5F0972E84C42500004CF8 /* Exceptions for "NextBus" folder in "Compile Sources" phase from "NextBus" target */ = {
+			isa = PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet;
+			buildPhase = 75F5F0612E849B7500004CF8 /* Sources */;
+			membershipExceptions = (
+				stops.txt,
+			);
+		};
+/* End PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		75F5F0672E849B7500004CF8 /* NextBus */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				75F5F0972E84C42500004CF8 /* Exceptions for "NextBus" folder in "Compile Sources" phase from "NextBus" target */,
+			);
 			path = NextBus;
 			sourceTree = "<group>";
 		};
