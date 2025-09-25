@@ -62,17 +62,6 @@ struct Stop: Identifiable, Hashable {
     enum Purpose { case storkeAndSierraMadre, ucsbElings, ucsbNorthHall, custom }
 }
 
-// Official stop IDs observed on SBMTD BusTracker (public site)
-//  - Storke & Sierra Madre: 371
-//  - UCSB Elings Hall (Outbound): 1023 (the /wireless page sometimes shows this as Outbound/Downtown SB)
-//  - UCSB North Hall (Outbound): 42
-// If these ever change, just update the IDs here.
-fileprivate let STOPS: [Stop] = [
-    .init(id: "371", label: "Storke & Sierra Madre", purpose: .storkeAndSierraMadre),
-    .init(id: "1023", label: "UCSB Elings Hall", purpose: .ucsbElings),
-    .init(id: "42", label: "UCSB North Hall", purpose: .ucsbNorthHall)
-]
-
 // MARK: - Models
 struct Prediction: Identifiable, Hashable {
     let id = UUID()
@@ -215,65 +204,29 @@ final class AppModel: ObservableObject {
         defer { isRefreshing = false }
 
         var next: [StopBoard] = []
-        let settings = currentUserStops()
-        let enabledCustom = settings.stops.filter { $0.enabled }
-        if settings.useCustom, !enabledCustom.isEmpty {
-            // Use user-defined stops
-            for cfg in enabledCustom {
-                do {
-                    let preds = try await provider.fetch(stopId: cfg.id)
-                    // Apply per-stop route filter (empty means all)
-                    let routeFiltered: [Prediction]
-                    if cfg.selectedRoutes.isEmpty { routeFiltered = preds }
-                    else { routeFiltered = preds.filter { cfg.selectedRoutes.contains($0.route) } }
-                    // Apply optional headsign contains filter
-                    let headsignFilter = cfg.headsignIncludes.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                    let final = headsignFilter.isEmpty ? routeFiltered : routeFiltered.filter { $0.headsign.lowercased().contains(headsignFilter) }
-                    let sorted = final.sorted { (a, b) in (a.minutes ?? 9_999) < (b.minutes ?? 9_999) }
-                    let stop = Stop(id: cfg.id, label: cfg.label.isEmpty ? cfg.id : cfg.label, purpose: .custom)
-                    next.append(StopBoard(stop: stop, predictions: Array(sorted.prefix(6)), fetchedAt: Date()))
-                } catch {
-                    let stop = Stop(id: cfg.id, label: cfg.label.isEmpty ? cfg.id : cfg.label, purpose: .custom)
-                    next.append(StopBoard(stop: stop, predictions: [], fetchedAt: Date()))
-                }
-            }
-        } else {
-            // Use built-in defaults
-            for stop in STOPS {
-                do {
-                    let preds = try await provider.fetch(stopId: stop.id)
-                    let filtered: [Prediction]
-                    switch stop.purpose {
-                    case .storkeAndSierraMadre:
-                        filtered = preds.filter { Routes.allCases.map { $0.rawValue }.contains($0.route) }
-                    case .ucsbElings, .ucsbNorthHall:
-                        filtered = preds.filter { ["11","27","28"].contains($0.route) && towardCaminoRealMarket($0) }
-                    case .custom:
-                        filtered = preds
-                    }
-                    let sorted = filtered.sorted { (a, b) in (a.minutes ?? 9_999) < (b.minutes ?? 9_999) }
-                    next.append(StopBoard(stop: stop, predictions: Array(sorted.prefix(6)), fetchedAt: Date()))
-                } catch {
-                    next.append(StopBoard(stop: stop, predictions: [], fetchedAt: Date()))
-                }
-            }
-            if !enabledCustom.isEmpty {
-                for cfg in enabledCustom {
-                    do {
-                        let preds = try await provider.fetch(stopId: cfg.id)
-                        let routeFiltered: [Prediction]
-                        if cfg.selectedRoutes.isEmpty { routeFiltered = preds }
-                        else { routeFiltered = preds.filter { cfg.selectedRoutes.contains($0.route) } }
-                        let headsignFilter = cfg.headsignIncludes.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                        let final = headsignFilter.isEmpty ? routeFiltered : routeFiltered.filter { $0.headsign.lowercased().contains(headsignFilter) }
-                        let sorted = final.sorted { (a, b) in (a.minutes ?? 9_999) < (b.minutes ?? 9_999) }
-                        let stop = Stop(id: cfg.id, label: cfg.label.isEmpty ? cfg.id : cfg.label, purpose: .custom)
-                        next.append(StopBoard(stop: stop, predictions: Array(sorted.prefix(6)), fetchedAt: Date()))
-                    } catch {
-                        let stop = Stop(id: cfg.id, label: cfg.label.isEmpty ? cfg.id : cfg.label, purpose: .custom)
-                        next.append(StopBoard(stop: stop, predictions: [], fetchedAt: Date()))
-                    }
-                }
+        // Use only user-defined stops; if none are enabled, show nothing
+        let enabledCustom = loadUserStops().filter { $0.enabled }
+        guard !enabledCustom.isEmpty else {
+            boards = []
+            return
+        }
+
+        for cfg in enabledCustom {
+            do {
+                let preds = try await provider.fetch(stopId: cfg.id)
+                // Apply per-stop route filter (empty means all)
+                let routeFiltered: [Prediction]
+                if cfg.selectedRoutes.isEmpty { routeFiltered = preds }
+                else { routeFiltered = preds.filter { cfg.selectedRoutes.contains($0.route) } }
+                // Apply optional headsign contains filter
+                let headsignFilter = cfg.headsignIncludes.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                let final = headsignFilter.isEmpty ? routeFiltered : routeFiltered.filter { $0.headsign.lowercased().contains(headsignFilter) }
+                let sorted = final.sorted { (a, b) in (a.minutes ?? 9_999) < (b.minutes ?? 9_999) }
+                let stop = Stop(id: cfg.id, label: cfg.label.isEmpty ? cfg.id : cfg.label, purpose: .custom)
+                next.append(StopBoard(stop: stop, predictions: Array(sorted.prefix(6)), fetchedAt: Date()))
+            } catch {
+                let stop = Stop(id: cfg.id, label: cfg.label.isEmpty ? cfg.id : cfg.label, purpose: .custom)
+                next.append(StopBoard(stop: stop, predictions: [], fetchedAt: Date()))
             }
         }
         boards = next
@@ -285,6 +238,10 @@ struct ContentView: View {
     @StateObject private var model = AppModel()
     @State private var showingSettings = false
     @State private var showingLookup = false
+
+    @State private var showingEdit = false
+    @State private var editingStopId: String? = nil
+    @State private var editingKeyword: String = ""
 
     var body: some View {
         NavigationStack {
@@ -324,10 +281,18 @@ struct ContentView: View {
                             Text(board.stop.label)
                             Spacer()
                             if board.stop.purpose == .custom {
-                                Button(role: .destructive) {
+                                Button {
+                                    startEdit(stopId: board.stop.id)
+                                } label: {
+                                    Image(systemName: "pencil").foregroundStyle(.secondary)
+                                }
+                                .buttonStyle(.borderless)
+                                .accessibilityLabel("Edit filters")
+
+                                Button {
                                     removeFromHome(stopId: board.stop.id)
                                 } label: {
-                                    Image(systemName: "trash")
+                                    Image(systemName: "trash").foregroundStyle(.secondary)
                                 }
                                 .buttonStyle(.borderless)
                                 .accessibilityLabel("Remove stop")
@@ -336,8 +301,15 @@ struct ContentView: View {
                     }
                 }
             }
-            .navigationTitle("SB MTD — Next buses")
             .toolbar {
+                ToolbarItem(placement: .principal) {
+                    VStack(spacing: 0) {
+                        Text("SB MTD — Next buses").font(.headline)
+                        Text("Data Provided by Santa Barbara MTD")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
                 ToolbarItem(placement: .topBarLeading) {
                     HStack(spacing: 12) {
                         Button { showingSettings = true } label: { Image(systemName: "gearshape") }
@@ -353,7 +325,16 @@ struct ContentView: View {
                     .accessibilityLabel("Refresh")
                 }
             }
-            .task { await model.refresh() }
+            .task {
+                // Initial fetch
+                await model.refresh()
+                // Auto-refresh every 30 seconds while the view is active
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 30 * 1_000_000_000)
+                    if Task.isCancelled { break }
+                    await model.refresh()
+                }
+            }
             .refreshable { await model.refresh() }
             .sheet(isPresented: $showingSettings) {
                 SettingsView()
@@ -362,6 +343,14 @@ struct ContentView: View {
             .sheet(isPresented: $showingLookup) {
                 StopLookupView()
                     .presentationDetents([.large])
+            }
+            .sheet(isPresented: $showingEdit) {
+                if let stopId = editingStopId {
+                    EditStopFilterView(stopId: stopId, initialKeyword: editingKeyword) { newKeyword in
+                        saveKeyword(for: stopId, keyword: newKeyword)
+                        showingEdit = false
+                    }
+                }
             }
         }
     }
@@ -385,6 +374,32 @@ struct ContentView: View {
         saveUserStops(stops)
         Task { await model.refresh() }
     }
+
+    private func startEdit(stopId: String) {
+        let stops = loadUserStops()
+        if let cfg = stops.first(where: { $0.id == stopId }) {
+            editingStopId = stopId
+            editingKeyword = cfg.headsignIncludes
+        } else {
+            editingStopId = stopId
+            editingKeyword = ""
+        }
+        showingEdit = true
+    }
+
+    private func saveKeyword(for stopId: String, keyword: String) {
+        var stops = loadUserStops()
+        if let idx = stops.firstIndex(where: { $0.id == stopId }) {
+            stops[idx].headsignIncludes = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
+            saveUserStops(stops)
+        } else {
+            // If the stop isn't in custom list for some reason, add it with this keyword
+            let cfg = UserStopConfig(id: stopId, label: stopId, selectedRoutes: [], headsignIncludes: keyword.trimmingCharacters(in: .whitespacesAndNewlines), enabled: true)
+            stops.append(cfg)
+            saveUserStops(stops)
+        }
+        Task { await model.refresh() }
+    }
 }
 
 private struct ElapsedSinceView: View {
@@ -399,6 +414,43 @@ private struct ElapsedSinceView: View {
             }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Last updated \(stopwatchString(since: since))")
+        }
+    }
+}
+
+private struct EditStopFilterView: View {
+    let stopId: String
+    let initialKeyword: String
+    let onSave: (String) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var keyword: String = ""
+
+    init(stopId: String, initialKeyword: String, onSave: @escaping (String) -> Void) {
+        self.stopId = stopId
+        self.initialKeyword = initialKeyword
+        self.onSave = onSave
+        _keyword = State(initialValue: initialKeyword)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Filter") {
+                    TextField("Headsign contains (optional)", text: $keyword)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled(true)
+                }
+                Section(footer: Text("Trips whose headsign contains this text will be shown. Leave blank to show all.").font(.footnote).foregroundStyle(.secondary)) { EmptyView() }
+            }
+            .navigationTitle("Edit Stop")
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) { Button("Close") { dismiss() } }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Save") {
+                        onSave(keyword)
+                    }.bold()
+                }
+            }
         }
     }
 }
@@ -649,7 +701,7 @@ private enum StopCatalog {
     81,2,San Andres & Valerio
     82,20,Arroyo Burro Beach Park
     83,200,Carrillo & Bath
-    84,203,Carrillo & Anacapa
+    84,203,Carrillo & Anapamu
     85,206,Carrillo & Chino
     86,208,Meigs & Red Rose
     87,209,Cliff & Salida Del Sol
@@ -1297,17 +1349,28 @@ private struct StopLookupView: View {
             List {
                 if StopCatalog.usedFallback {
                     Section {
-                        Text("Bus stop numbers are written on the yellow but stop sign.")
+                        Text("Bus stop numbers are written on the green sign under the phone number.")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
                 }
                 ForEach(filtered(entries)) { e in
-                    NavigationLink(destination: StopBoardDetailView(stopId: e.code, title: "#\(e.code) — \(e.name)")) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(e.name).font(.body)
-                            Text("#\(e.code)  (ID: \(e.id))").font(.caption).foregroundStyle(.secondary)
+                    HStack {
+                        NavigationLink(destination: StopBoardDetailView(stopId: e.code, title: "#\(e.code) — \(e.name)")) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(e.name).font(.body)
+                                Text("#\(e.code)  (ID: \(e.id))").font(.caption).foregroundStyle(.secondary)
+                            }
                         }
+                        Spacer()
+                        Button {
+                            addToHome(e)
+                        } label: {
+                            Image(systemName: "plus.circle")
+                                .imageScale(.large)
+                        }
+                        .buttonStyle(.borderless)
+                        .accessibilityLabel("Add #\(e.code) — \(e.name) to Home")
                     }
                     .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                         Button {
@@ -1393,6 +1456,12 @@ private struct StopBoardDetailView: View {
                 }
                 .accessibilityLabel("Refresh")
             }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button(action: { addCurrentStopToHome() }) {
+                    Image(systemName: "plus")
+                }
+                .accessibilityLabel("Add to Home")
+            }
         }
         .task { await refresh() }
         .refreshable { await refresh() }
@@ -1418,6 +1487,16 @@ private struct StopBoardDetailView: View {
         } catch {
             predictions = []
             fetchedAt = Date()
+        }
+    }
+
+    private func addCurrentStopToHome() {
+        var stops = loadUserStops()
+        if !stops.contains(where: { $0.id == stopId }) {
+            let label = title
+            let cfg = UserStopConfig(id: stopId, label: label, selectedRoutes: [], headsignIncludes: "", enabled: true)
+            stops.append(cfg)
+            saveUserStops(stops)
         }
     }
 
