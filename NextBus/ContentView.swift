@@ -14,7 +14,7 @@ import Combine
 
 // MARK: - User settings
 struct UserStopConfig: Identifiable, Codable, Hashable {
-    var id: String            // stop id
+    var id: String            // stop code
     var label: String         // user label
     var selectedRoutes: Set<String> = [] // empty means all
     var headsignIncludes: String = ""   // optional contains filter
@@ -216,9 +216,10 @@ final class AppModel: ObservableObject {
 
         var next: [StopBoard] = []
         let settings = currentUserStops()
-        if settings.useCustom, !settings.stops.filter({ $0.enabled }).isEmpty {
+        let enabledCustom = settings.stops.filter { $0.enabled }
+        if settings.useCustom, !enabledCustom.isEmpty {
             // Use user-defined stops
-            for cfg in settings.stops where cfg.enabled {
+            for cfg in enabledCustom {
                 do {
                     let preds = try await provider.fetch(stopId: cfg.id)
                     // Apply per-stop route filter (empty means all)
@@ -256,6 +257,24 @@ final class AppModel: ObservableObject {
                     next.append(StopBoard(stop: stop, predictions: [], fetchedAt: Date()))
                 }
             }
+            if !enabledCustom.isEmpty {
+                for cfg in enabledCustom {
+                    do {
+                        let preds = try await provider.fetch(stopId: cfg.id)
+                        let routeFiltered: [Prediction]
+                        if cfg.selectedRoutes.isEmpty { routeFiltered = preds }
+                        else { routeFiltered = preds.filter { cfg.selectedRoutes.contains($0.route) } }
+                        let headsignFilter = cfg.headsignIncludes.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                        let final = headsignFilter.isEmpty ? routeFiltered : routeFiltered.filter { $0.headsign.lowercased().contains(headsignFilter) }
+                        let sorted = final.sorted { (a, b) in (a.minutes ?? 9_999) < (b.minutes ?? 9_999) }
+                        let stop = Stop(id: cfg.id, label: cfg.label.isEmpty ? cfg.id : cfg.label, purpose: .custom)
+                        next.append(StopBoard(stop: stop, predictions: Array(sorted.prefix(6)), fetchedAt: Date()))
+                    } catch {
+                        let stop = Stop(id: cfg.id, label: cfg.label.isEmpty ? cfg.id : cfg.label, purpose: .custom)
+                        next.append(StopBoard(stop: stop, predictions: [], fetchedAt: Date()))
+                    }
+                }
+            }
         }
         boards = next
     }
@@ -271,7 +290,7 @@ struct ContentView: View {
         NavigationStack {
             List {
                 ForEach(model.boards) { board in
-                    Section(board.stop.label) {
+                    Section {
                         if board.predictions.isEmpty {
                             Text("No predictions found right now.")
                                 .foregroundStyle(.secondary)
@@ -300,6 +319,20 @@ struct ContentView: View {
 
                         ElapsedSinceView(since: board.fetchedAt)
                             .padding(.top, 4)
+                    } header: {
+                        HStack {
+                            Text(board.stop.label)
+                            Spacer()
+                            if board.stop.purpose == .custom {
+                                Button(role: .destructive) {
+                                    removeFromHome(stopId: board.stop.id)
+                                } label: {
+                                    Image(systemName: "trash")
+                                }
+                                .buttonStyle(.borderless)
+                                .accessibilityLabel("Remove stop")
+                            }
+                        }
                     }
                 }
             }
@@ -344,6 +377,13 @@ struct ContentView: View {
         let fmt = RelativeDateTimeFormatter()
         fmt.unitsStyle = .short
         return fmt.localizedString(for: date, relativeTo: .now)
+    }
+    
+    private func removeFromHome(stopId: String) {
+        var stops = loadUserStops()
+        stops.removeAll { $0.id == stopId }
+        saveUserStops(stops)
+        Task { await model.refresh() }
     }
 }
 
@@ -390,7 +430,7 @@ struct SettingsView: View {
                 }
 
                 Section("Add stop") {
-                    TextField("Stop ID", text: $newStopId)
+                    TextField("Stop Code", text: $newStopId)
                         .keyboardType(.numberPad)
                     TextField("Label (optional)", text: $newStopLabel)
                     Button("Add") { addStop() }
@@ -408,7 +448,7 @@ struct SettingsView: View {
                                     Spacer()
                                     Toggle("Enabled", isOn: $cfg.enabled).labelsHidden()
                                 }
-                                Text("Stop ID: \(cfg.id)")
+                                Text("Stop Code: \(cfg.id)")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
 
@@ -1257,7 +1297,7 @@ private struct StopLookupView: View {
             List {
                 if StopCatalog.usedFallback {
                     Section {
-                        Text("Using a built‑in stop list. Add stops.txt to the app target for full search.")
+                        Text("Bus stop numbers are written on the yellow but stop sign.")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
@@ -1268,6 +1308,14 @@ private struct StopLookupView: View {
                             Text(e.name).font(.body)
                             Text("#\(e.code)  (ID: \(e.id))").font(.caption).foregroundStyle(.secondary)
                         }
+                    }
+                    .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                        Button {
+                            addToHome(e)
+                        } label: {
+                            Label("Add to Home", systemImage: "plus")
+                        }
+                        .tint(.accentColor)
                     }
                 }
             }
@@ -1285,6 +1333,15 @@ private struct StopLookupView: View {
             $0.name.localizedCaseInsensitiveContains(q) ||
             $0.code.localizedCaseInsensitiveContains(q) ||
             $0.id.lowercased().contains(qLower)
+        }
+    }
+    
+    private func addToHome(_ entry: StopCatalogEntry) {
+        var stops = loadUserStops()
+        if !stops.contains(where: { $0.id == entry.code }) {
+            let cfg = UserStopConfig(id: entry.code, label: entry.name, selectedRoutes: [], headsignIncludes: "", enabled: true)
+            stops.append(cfg)
+            saveUserStops(stops)
         }
     }
 }
