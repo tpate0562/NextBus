@@ -11,6 +11,8 @@
 
 import SwiftUI
 import Combine
+import MapKit
+import Compression
 
 // MARK: - User settings
 struct UserStopConfig: Identifiable, Codable, Hashable {
@@ -23,6 +25,8 @@ struct UserStopConfig: Identifiable, Codable, Hashable {
 
 fileprivate let USER_STOPS_KEY = "userStops.v1"
 fileprivate let USE_CUSTOM_STOPS_ONLY_KEY = "useCustomStopsOnly.v1"
+
+fileprivate let GTFS_RT_URL_STRING = "https://bustracker.sbmtd.gov/gtfsrt/vehicles" // TODO: replace with real GTFS-RT VehiclePositions URL
 
 fileprivate func loadUserStops() -> [UserStopConfig] {
     if let data = UserDefaults.standard.data(forKey: USER_STOPS_KEY) {
@@ -46,6 +50,398 @@ fileprivate func loadUseCustomStopsOnly() -> Bool {
 fileprivate func saveUseCustomStopsOnly(_ flag: Bool) {
     UserDefaults.standard.set(flag, forKey: USE_CUSTOM_STOPS_ONLY_KEY)
 }
+
+// MARK: - Vehicle locations (GTFS-RT manual decoder)
+
+// Public model
+struct VehicleLocation: Identifiable, Equatable {
+    let id: String
+    let routeID: String?
+    let tripID: String?
+    let latitude: Double
+    let longitude: Double
+    let bearing: Double?
+    let speedMetersPerSecond: Double?
+    let timestamp: Date?
+
+    var coordinates: (Double, Double) { (latitude, longitude) }
+}
+
+fileprivate let _iso8601Fractional: ISO8601DateFormatter = {
+    let f = ISO8601DateFormatter()
+    f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return f
+}()
+
+fileprivate func debugDumpVehicles(_ vehicles: [VehicleLocation]) {
+#if DEBUG
+    print("\n===== GTFS-RT VehiclePositions decoded: \(vehicles.count) vehicles =====")
+    for v in vehicles {
+        let ts = v.timestamp.map { _iso8601Fractional.string(from: $0) } ?? "nil"
+        let bearingStr = v.bearing.map { String(format: "%.0f°", $0) } ?? "nil"
+        let speedMS = v.speedMetersPerSecond.map { String(format: "%.1f m/s", $0) } ?? "nil"
+        let speedMPH = v.speedMetersPerSecond.map { String(format: "%.1f mph", $0 * 2.236936) } ?? "nil"
+        let latStr = String(format: "%.6f", v.latitude)
+        let lonStr = String(format: "%.6f", v.longitude)
+        print("id=\(v.id) route=\(v.routeID ?? "nil") trip=\(v.tripID ?? "nil") lat=\(latStr) lon=\(lonStr) bearing=\(bearingStr) speed=\(speedMS) (\(speedMPH)) ts=\(ts)")
+    }
+    print("===== END GTFS-RT dump =====\n")
+#endif
+}
+
+// Internal message models (minimal GTFS-RT subset)
+private struct Position { var latitude: Double?; var longitude: Double?; var bearing: Double?; var speed: Double? }
+private struct TripDescriptor { var tripID: String?; var routeID: String? }
+private struct VehicleDescriptor { var id: String? }
+private struct VehiclePositionMessage { var trip: TripDescriptor?; var position: Position?; var vehicle: VehicleDescriptor?; var timestamp: UInt64? }
+private struct FeedEntity { var id: String?; var vehicle: VehiclePositionMessage? }
+
+// Minimal Protobuf reader
+private struct ProtobufReader {
+    let data: Data
+    private(set) var offset: Int = 0
+    var isAtEnd: Bool { offset >= data.count }
+    init(data: Data) { self.data = data }
+    mutating func readVarint() -> UInt64? {
+        var result: UInt64 = 0
+        var shift: UInt64 = 0
+        while offset < data.count && shift < 64 {
+            let byte = data[offset]
+            offset += 1
+            result |= UInt64(byte & 0x7F) << shift
+            if (byte & 0x80) == 0 { return result }
+            shift += 7
+        }
+        return nil
+    }
+    mutating func readFixed32() -> UInt32? {
+        guard offset + 4 <= data.count else { return nil }
+        let slice = data[offset ..< offset + 4]
+        offset += 4
+        var value: UInt32 = 0
+        for (i, b) in slice.enumerated() { value |= UInt32(b) << (8 * i) }
+        return value
+    }
+    mutating func readLengthDelimited() -> Data? {
+        guard let len64 = readVarint() else { return nil }
+        let len = Int(len64)
+        guard offset + len <= data.count else { return nil }
+        let sub = data.subdata(in: offset ..< offset + len)
+        offset += len
+        return sub
+    }
+    mutating func readString() -> String? { guard let bytes = readLengthDelimited() else { return nil }; return String(data: bytes, encoding: .utf8) }
+    mutating func readKey() -> (fieldNumber: Int, wireType: Int)? {
+        guard let key = readVarint() else { return nil }
+        let wireType = Int(key & 0x7)
+        let fieldNumber = Int(key >> 3)
+        return (fieldNumber, wireType)
+    }
+    mutating func skipField(wireType: Int) {
+        switch wireType {
+        case 0: _ = readVarint()
+        case 1: offset = min(data.count, offset + 8)
+        case 2: if let len64 = readVarint() { let len = Int(len64); offset = min(data.count, offset + len) }
+        case 5: offset = min(data.count, offset + 4)
+        default: break
+        }
+    }
+}
+
+// Parsers for GTFS-RT subset
+private func parsePosition(_ data: Data) -> Position {
+    var reader = ProtobufReader(data: data)
+    var position = Position()
+    while let (field, wire) = reader.readKey() {
+        switch field {
+        case 1: // latitude (float, fixed32)
+            if wire == 5, let bits = reader.readFixed32() { position.latitude = Double(Float(bitPattern: bits)) } else { reader.skipField(wireType: wire) }
+        case 2: // longitude (float, fixed32)
+            if wire == 5, let bits = reader.readFixed32() { position.longitude = Double(Float(bitPattern: bits)) } else { reader.skipField(wireType: wire) }
+        case 3: // bearing (float, fixed32)
+            if wire == 5, let bits = reader.readFixed32() { position.bearing = Double(Float(bitPattern: bits)) } else { reader.skipField(wireType: wire) }
+        case 4: // odometer (double, fixed64) — not used here; skip
+            reader.skipField(wireType: wire)
+        case 5: // speed (float, fixed32)
+            if wire == 5, let bits = reader.readFixed32() { position.speed = Double(Float(bitPattern: bits)) } else { reader.skipField(wireType: wire) }
+        default:
+            reader.skipField(wireType: wire)
+        }
+    }
+    return position
+}
+
+private func parseTripDescriptor(_ data: Data) -> TripDescriptor {
+    var reader = ProtobufReader(data: data)
+    var trip = TripDescriptor()
+    while let (field, wire) = reader.readKey() {
+        switch field {
+        case 1: if wire == 2 { trip.tripID = reader.readString() } else { reader.skipField(wireType: wire) }
+        case 5: if wire == 2 { trip.routeID = reader.readString() } else { reader.skipField(wireType: wire) }
+        default: reader.skipField(wireType: wire)
+        }
+    }
+    return trip
+}
+
+private func parseVehicleDescriptor(_ data: Data) -> VehicleDescriptor {
+    var reader = ProtobufReader(data: data)
+    var vehicle = VehicleDescriptor()
+    while let (field, wire) = reader.readKey() {
+        switch field {
+        case 1: if wire == 2 { vehicle.id = reader.readString() } else { reader.skipField(wireType: wire) }
+        default: reader.skipField(wireType: wire)
+        }
+    }
+    return vehicle
+}
+
+private func parseVehiclePosition(_ data: Data) -> VehiclePositionMessage {
+    var reader = ProtobufReader(data: data)
+    var vp = VehiclePositionMessage()
+    while let (field, wire) = reader.readKey() {
+        switch field {
+        case 1: // trip
+            if wire == 2, let sub = reader.readLengthDelimited() { vp.trip = parseTripDescriptor(sub) } else { reader.skipField(wireType: wire) }
+        case 2: // position
+            if wire == 2, let sub = reader.readLengthDelimited() { vp.position = parsePosition(sub) } else { reader.skipField(wireType: wire) }
+        case 5: // timestamp (varint)
+            if wire == 0, let ts = reader.readVarint() { vp.timestamp = ts } else { reader.skipField(wireType: wire) }
+        case 8: // vehicle descriptor
+            if wire == 2, let sub = reader.readLengthDelimited() { vp.vehicle = parseVehicleDescriptor(sub) } else { reader.skipField(wireType: wire) }
+        default:
+            reader.skipField(wireType: wire)
+        }
+    }
+    return vp
+}
+
+private func parseFeedEntity(_ data: Data) -> FeedEntity {
+    var reader = ProtobufReader(data: data)
+    var entity = FeedEntity()
+    while let (field, wire) = reader.readKey() {
+        switch field {
+        case 1: // id
+            if wire == 2 { entity.id = reader.readString() } else { reader.skipField(wireType: wire) }
+        case 4: // vehicle (length-delimited, field 4)
+            if wire == 2, let sub = reader.readLengthDelimited() { entity.vehicle = parseVehiclePosition(sub) } else { reader.skipField(wireType: wire) }
+        default:
+            reader.skipField(wireType: wire)
+        }
+    }
+    return entity
+}
+
+// Public decoder
+enum GTFSRTManualDecoder {
+    static func decodeVehicles(from data: Data) -> [VehicleLocation] {
+        var reader = ProtobufReader(data: data)
+        var locations: [VehicleLocation] = []
+        while let (field, wire) = reader.readKey() {
+            if field == 2 && wire == 2, let entityData = reader.readLengthDelimited() {
+                let entity = parseFeedEntity(entityData)
+                guard let vp = entity.vehicle, let pos = vp.position, let lat = pos.latitude, let lon = pos.longitude else { continue }
+                let vehID = vp.vehicle?.id ?? entity.id ?? ""
+                let routeID = vp.trip?.routeID
+                let tripID = vp.trip?.tripID
+                let bearing = pos.bearing
+                let speed = pos.speed
+                let tsDate: Date? = vp.timestamp.map { Date(timeIntervalSince1970: TimeInterval($0)) }
+                let location = VehicleLocation(id: vehID, routeID: routeID, tripID: tripID, latitude: lat, longitude: lon, bearing: bearing, speedMetersPerSecond: speed, timestamp: tsDate)
+                locations.append(location)
+            } else {
+                reader.skipField(wireType: wire)
+            }
+        }
+        return locations
+    }
+}
+
+// Optional: gunzip helper for raw gzip payloads without Content-Encoding
+private func gunzipIfNeeded(_ data: Data) -> Data {
+    // gzip magic header 0x1f 0x8b
+    guard data.count >= 2, data[0] == 0x1f, data[1] == 0x8b else { return data }
+
+    var decoded = Data()
+
+    var stream = compression_stream(dst_ptr: UnsafeMutablePointer<UInt8>(bitPattern: 0)!, dst_size: 0, src_ptr: UnsafePointer<UInt8>(bitPattern: 0)!, src_size: 0, state: nil)
+    var status = compression_stream_init(&stream, COMPRESSION_STREAM_DECODE, COMPRESSION_ZLIB)
+    guard status != COMPRESSION_STATUS_ERROR else { return data }
+    defer { compression_stream_destroy(&stream) }
+
+    return data.withUnsafeBytes { (srcBuf: UnsafeRawBufferPointer) in
+        var srcIndex = 0
+        decoded.removeAll(keepingCapacity: true)
+
+        while srcIndex < data.count {
+            let srcChunk = min(64 * 1024, data.count - srcIndex)
+            stream.src_ptr = srcBuf.baseAddress!.advanced(by: srcIndex).assumingMemoryBound(to: UInt8.self)
+            stream.src_size = srcChunk
+            srcIndex += srcChunk
+
+            var dstData = Data(count: 64 * 1024)
+            dstData.withUnsafeMutableBytes { dstBuf in
+                stream.dst_ptr = dstBuf.baseAddress!.assumingMemoryBound(to: UInt8.self)
+                stream.dst_size = dstBuf.count
+
+                while true {
+                    status = compression_stream_process(&stream, srcIndex >= data.count ? Int32(COMPRESSION_STREAM_FINALIZE.rawValue) : 0)
+                    let produced = dstBuf.count - stream.dst_size
+                    if produced > 0 {
+                        if let base = dstBuf.bindMemory(to: UInt8.self).baseAddress { decoded.append(base, count: produced) }
+                        stream.dst_ptr = dstBuf.baseAddress!.assumingMemoryBound(to: UInt8.self)
+                        stream.dst_size = dstBuf.count
+                    }
+                    if status == COMPRESSION_STATUS_OK && stream.src_size == 0 {
+                        break // need more input
+                    } else if status == COMPRESSION_STATUS_END {
+                        return
+                    } else if status == COMPRESSION_STATUS_ERROR {
+                        decoded.removeAll()
+                        return
+                    }
+                }
+            }
+        }
+        return decoded.isEmpty ? data : decoded
+    }
+}
+
+final class MTDVehicleService {
+    private let session: URLSession
+    init(session: URLSession = .shared) { self.session = session }
+    func fetchVehicleLocations(from url: URL, completion: @escaping (Result<[VehicleLocation], Error>) -> Void) {
+        let task = session.dataTask(with: url) { data, response, error in
+            if let error = error { completion(.failure(error)); return }
+#if DEBUG
+            if let http = response as? HTTPURLResponse {
+                let lenHeader = http.value(forHTTPHeaderField: "Content-Length") ?? "(none)"
+                print("GTFS-RT fetch: status=\(http.statusCode) mime=\(http.mimeType ?? "nil") content-length=\(lenHeader)")
+            } else {
+                print("GTFS-RT fetch: non-HTTP response")
+            }
+#endif
+            guard let data = data else {
+                let err = NSError(domain: "MTDVehicleService", code: -1, userInfo: [NSLocalizedDescriptionKey: "No data"])
+                completion(.failure(err)); return
+            }
+
+            // Try decode as-is
+            var vehicles = GTFSRTManualDecoder.decodeVehicles(from: data)
+
+            // Fallback: gunzip if the payload appears to be gzipped without Content-Encoding
+            if vehicles.isEmpty {
+                let unzipped = gunzipIfNeeded(data)
+                if unzipped != data {
+                    vehicles = GTFSRTManualDecoder.decodeVehicles(from: unzipped)
+                }
+            }
+
+#if DEBUG
+            if vehicles.isEmpty {
+                let prefix = data.prefix(24)
+                print("GTFS-RT decode yielded 0 vehicles. First 24 bytes: \(prefix.map { String(format: "%02x", $0) }.joined(separator: " "))")
+            }
+            debugDumpVehicles(vehicles)
+#endif
+            completion(.success(vehicles))
+        }
+        task.resume()
+    }
+}
+
+@MainActor
+final class VehicleViewModel: ObservableObject {
+    @Published var vehicles: [VehicleLocation] = []
+    @Published var errorMessage: String?
+    private let service = MTDVehicleService()
+    func refresh() {
+        guard let url = URL(string: GTFS_RT_URL_STRING) else {
+            errorMessage = "Bad GTFS-RT URL"
+            return
+        }
+        service.fetchVehicleLocations(from: url) { [weak self] result in
+            DispatchQueue.main.async {
+                switch result {
+                case .success(let vehicles): self?.vehicles = vehicles
+                case .failure(let error): self?.errorMessage = error.localizedDescription
+                }
+            }
+        }
+    }
+}
+
+private struct VehicleAnnotationView: View {
+    let route: String
+    var body: some View {
+        ZStack {
+            Circle().fill(Color.accentColor.opacity(0.85)).frame(width: 18, height: 18)
+            Text(route).font(.caption2).bold().foregroundStyle(.white)
+        }
+    }
+}
+
+// Map view for vehicles
+private struct VehicleMapView: View {
+    @StateObject private var vm = VehicleViewModel()
+    let title: String
+    let routeFilter: String? // if set, only show vehicles whose routeID matches
+
+    @State private var region = MKCoordinateRegion(center: CLLocationCoordinate2D(latitude: 34.423, longitude: -119.84), span: MKCoordinateSpan(latitudeDelta: 0.15, longitudeDelta: 0.15))
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                Map(position: .constant(.region(region))) {
+                    ForEach(filteredVehicles()) { v in
+                        let coord = CLLocationCoordinate2D(latitude: v.latitude, longitude: v.longitude)
+                        let routeText = v.routeID ?? "?"
+                        Annotation("#\(routeText)", coordinate: coord) {
+                            VehicleAnnotationView(route: routeText)
+                                .accessibilityLabel("Route \(v.routeID ?? "unknown") vehicle at latitude \(v.latitude), longitude \(v.longitude)")
+                        }
+                    }
+                }
+                .onChange(of: vm.vehicles) { _ in updateRegionToFit() }
+                .task { await autoRefreshLoop() }
+                .overlay(alignment: .topTrailing) {
+                    Button { vm.refresh() } label: {
+                        Image(systemName: "arrow.clockwise").padding(8).background(.thinMaterial).clipShape(Circle())
+                    }.padding()
+                }
+            }
+            .navigationTitle(title)
+            .toolbar { ToolbarItem(placement: .topBarLeading) { CloseButton() } }
+            .onAppear { vm.refresh() }
+        }
+    }
+
+    private func filteredVehicles() -> [VehicleLocation] {
+        guard let route = routeFilter, !route.isEmpty else { return vm.vehicles }
+        return vm.vehicles.filter { ($0.routeID ?? $0.tripID ?? "").localizedCaseInsensitiveContains(route) || ($0.routeID ?? "") == route }
+    }
+
+    private func updateRegionToFit() {
+        let points = filteredVehicles()
+        guard !points.isEmpty else { return }
+        var minLat = points.first!.latitude, maxLat = points.first!.latitude
+        var minLon = points.first!.longitude, maxLon = points.first!.longitude
+        for v in points { minLat = min(minLat, v.latitude); maxLat = max(maxLat, v.latitude); minLon = min(minLon, v.longitude); maxLon = max(maxLon, v.longitude) }
+        let center = CLLocationCoordinate2D(latitude: (minLat + maxLat)/2.0, longitude: (minLon + maxLon)/2.0)
+        let span = MKCoordinateSpan(latitudeDelta: max(0.01, (maxLat - minLat) * 1.6), longitudeDelta: max(0.01, (maxLon - minLon) * 1.6))
+        region = MKCoordinateRegion(center: center, span: span)
+    }
+
+    private func autoRefreshLoop() async {
+        while true {
+            if Task.isCancelled { break }
+            vm.refresh()
+            try? await Task.sleep(nanoseconds: 10 * 1_000_000_000)
+        }
+    }
+}
+
+private struct CloseButton: View { @Environment(\.dismiss) var dismiss; var body: some View { Button("Close") { dismiss() } } }
 
 // MARK: - Config
 fileprivate enum Routes: String, CaseIterable {
@@ -243,6 +639,9 @@ struct ContentView: View {
     @State private var editingStopId: String? = nil
     @State private var editingKeyword: String = ""
 
+    @State private var showingAllVehiclesMap = false
+    @State private var routeForVehicleMap: String? = nil
+
     var body: some View {
         NavigationStack {
             List {
@@ -271,6 +670,11 @@ struct ContentView: View {
                                 }
                                 .accessibilityElement(children: .ignore)
                                 .accessibilityLabel("Route \(p.route) to \(p.headsign), \(etaString(p.minutes)).")
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    routeForVehicleMap = p.route
+                                    showingAllVehiclesMap = true
+                                }
                             }
                         }
 
@@ -324,6 +728,12 @@ struct ContentView: View {
                     }
                     .accessibilityLabel("Refresh")
                 }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button(action: { showingAllVehiclesMap = true; routeForVehicleMap = nil }) {
+                        Image(systemName: "map")
+                    }
+                    .accessibilityLabel("Show vehicle map")
+                }
             }
             .task {
                 // Initial fetch
@@ -351,6 +761,11 @@ struct ContentView: View {
                         showingEdit = false
                     }
                 }
+            }
+            .sheet(isPresented: $showingAllVehiclesMap) {
+                let title = routeForVehicleMap == nil ? "All Vehicles" : "Route #\(routeForVehicleMap!)"
+                VehicleMapView(title: title, routeFilter: routeForVehicleMap)
+                    .presentationDetents([.large])
             }
         }
     }
@@ -563,14 +978,15 @@ private struct RoutePicker: View {
                 .buttonStyle(.bordered)
                 .font(.caption)
             }
-            // Toggle chips
-            WrapHStack(spacing: 8) {
+            // Toggle chips (wrapped using LazyVGrid for simpler layout)
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 56), spacing: 8)], alignment: .leading, spacing: 8) {
                 ForEach(allRoutes, id: \.self) { r in
-                    let isOn = selected.contains(r) || selected.isEmpty
+                    let isOn = selected.isEmpty || selected.contains(r)
                     Button(action: { toggle(r) }) {
                         Text("#\(r)")
                             .font(.caption)
-                            .padding(.vertical, 6).padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .padding(.horizontal, 10)
                             .background(Capsule().fill(isOn ? Color.accentColor.opacity(0.2) : Color.secondary.opacity(0.15)))
                     }
                 }
@@ -584,32 +1000,6 @@ private struct RoutePicker: View {
 
     private func toggle(_ r: String) {
         if selected.contains(r) { selected.remove(r) } else { selected.insert(r) }
-    }
-}
-
-// Simple wrapping HStack for chips
-private struct WrapHStack<Content: View>: View {
-    let spacing: CGFloat
-    @ViewBuilder let content: Content
-    var body: some View {
-        var width: CGFloat = 0
-        var height: CGFloat = 0
-        GeometryReader { geo in
-            ZStack(alignment: .topLeading) {
-                content
-                    .alignmentGuide(.leading) { d in
-                        if abs(width - d.width) > geo.size.width {
-                            width = 0; height -= d.height + spacing
-                        }
-                        let result = width
-                        if d[.trailing] > geo.size.width { width = 0; height -= d.height + spacing }
-                        width -= d.width + spacing
-                        return result
-                    }
-                    .alignmentGuide(.top) { _ in height }
-            }
-        }
-        .frame(height: 80)
     }
 }
 
@@ -1044,7 +1434,7 @@ private enum StopCatalog {
     489,696,Cota & Garden
     492,699,Cota & Quarantina
     493,7,Montecito & Milpas
-    494,700,Cota & Anacapa
+    494,700,Cota & Anapamu
     495,701,County Health & Social Services
     496,702,County Health & Social Services
     497,703,County Health
@@ -1265,10 +1655,13 @@ private enum StopCatalog {
     static func load() -> [StopCatalogEntry] {
         if let cached { return cached }
         var sourceText: String?
-        if let url = Bundle.main.url(forResource: "stops", withExtension: "txt"),
-           let data = try? Data(contentsOf: url),
-           let text = String(data: data, encoding: .utf8) {
-            sourceText = text
+        if let url = Bundle.main.url(forResource: "stops", withExtension: "txt") {
+            if let text = try? String(contentsOf: url, encoding: .utf8) {
+                sourceText = text
+            } else {
+                sourceText = embeddedCSV
+                usedFallback = true
+            }
         } else {
             sourceText = embeddedCSV
             usedFallback = true
@@ -1418,6 +1811,9 @@ private struct StopBoardDetailView: View {
     @State private var fetchedAt: Date? = nil
     private let provider: DeparturesProvider = SBMTDBusTrackerProvider()
 
+    @State private var showingVehiclesMap = false
+    @State private var routeForVehicleMap: String? = nil
+
     var body: some View {
         List {
             Section(footer: footerView) {
@@ -1444,6 +1840,11 @@ private struct StopBoardDetailView: View {
                         }
                         .accessibilityElement(children: .ignore)
                         .accessibilityLabel("Route \(p.route) to \(p.headsign), \(etaString(p.minutes)).")
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            routeForVehicleMap = p.route
+                            showingVehiclesMap = true
+                        }
                     }
                 }
             }
@@ -1462,9 +1863,18 @@ private struct StopBoardDetailView: View {
                 }
                 .accessibilityLabel("Add to Home")
             }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button(action: { showingVehiclesMap = true; routeForVehicleMap = nil }) { Image(systemName: "map") }
+                    .accessibilityLabel("Show vehicle map")
+            }
         }
         .task { await refresh() }
         .refreshable { await refresh() }
+        .sheet(isPresented: $showingVehiclesMap) {
+            let title = routeForVehicleMap == nil ? "All Vehicles" : "Route #\(routeForVehicleMap!)"
+            VehicleMapView(title: title, routeFilter: routeForVehicleMap)
+                .presentationDetents([.large])
+        }
     }
 
     @ViewBuilder private var footerView: some View {
