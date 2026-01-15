@@ -9,10 +9,13 @@
 // - You can later swap the backend to GTFS-RT or Google Directions Transit easily via the provider protocol.
 // - Pull-to-refresh, auto-refresh, offline caching, beautiful widgets can be added in follow‑ups.
 
+// NOTE: This code uses CoreLocation for user's location. You must add NSLocationWhenInUseUsageDescription key to Info.plist for location permission prompt.
+
 import SwiftUI
 import Combine
 import MapKit
 import Compression
+import CoreLocation
 
 // MARK: - User settings
 struct UserStopConfig: Identifiable, Codable, Hashable {
@@ -371,6 +374,50 @@ final class VehicleViewModel: ObservableObject {
     }
 }
 
+// MARK: - Location Manager
+final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelegate {
+    @Published var location: CLLocation?
+    private let manager = CLLocationManager()
+    override init() {
+        super.init()
+        manager.delegate = self
+        manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
+    }
+    func request() {
+        if CLLocationManager.locationServicesEnabled() == false {
+            // Location services disabled at system level; nothing to do here.
+            return
+        }
+
+        let status = manager.authorizationStatus
+        switch status {
+        case .notDetermined:
+            manager.requestWhenInUseAuthorization()
+        case .restricted, .denied:
+            // Optionally guide the user to Settings; for now we just don't start updates.
+            break
+        case .authorizedAlways, .authorizedWhenInUse:
+            manager.startUpdatingLocation()
+        @unknown default:
+            break
+        }
+    }
+    func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        if let loc = locations.last { self.location = loc }
+    }
+    func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        let status = manager.authorizationStatus
+        switch status {
+        case .authorizedAlways, .authorizedWhenInUse:
+            manager.startUpdatingLocation()
+        case .restricted, .denied, .notDetermined:
+            manager.stopUpdatingLocation()
+        @unknown default:
+            break
+        }
+    }
+}
+
 private struct VehicleAnnotationView: View {
     let route: String
     var body: some View {
@@ -396,7 +443,7 @@ private struct VehicleMapView: View {
                     ForEach(filteredVehicles()) { v in
                         let coord = CLLocationCoordinate2D(latitude: v.latitude, longitude: v.longitude)
                         let routeText = v.routeID ?? "?"
-                        Annotation("#\(routeText)", coordinate: coord) {
+                        Annotation("#\(v.id)", coordinate: coord) {
                             VehicleAnnotationView(route: routeText)
                                 .accessibilityLabel("Route \(v.routeID ?? "unknown") vehicle at latitude \(v.latitude), longitude \(v.longitude)")
                         }
@@ -459,18 +506,19 @@ struct Stop: Identifiable, Hashable {
 }
 
 // MARK: - Models
+struct StopBoard: Identifiable, Hashable {
+    let id = UUID()
+    let stop: Stop
+    let predictions: [Prediction]
+    let fetchedAt: Date
+}
+
 struct Prediction: Identifiable, Hashable {
     let id = UUID()
     let route: String       // e.g. "11", "27", "28", "24X"
     let headsign: String    // e.g. "UCSB North Hall", "Downtown SB", "Camino Real Mkt"
     let minutes: Int?       // nil if not parsable; 0 for APPROACHING/DUE
-}
-
-struct StopBoard: Identifiable {
-    let id = UUID()
-    let stop: Stop
-    let predictions: [Prediction]
-    let fetchedAt: Date
+    let vehicleID: String?
 }
 
 // MARK: - Provider abstraction
@@ -488,30 +536,10 @@ final class SBMTDBusTrackerProvider: DeparturesProvider {
         let (data, response) = try await URLSession.shared.data(from: url)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
               let html = String(data: data, encoding: .utf8), !html.isEmpty else {
-#if DEBUG
-            print("SBMTD fetch stop \(stopId): no HTML or bad status for URL: \(url.absoluteString)")
-#endif
             return []
         }
-#if DEBUG
-        do {
-            let preview = html.count > 4000 ? String(html.prefix(4000)) + "…(truncated)" : html
-            print("\n===== SBMTD RAW HTML for stop \(stopId) via \(url.absoluteString) =====\n\(preview)\n===== END RAW HTML (len=\(html.count)) =====\n")
-        }
-#endif
+
         let predictions = parse(html: html)
-#if DEBUG
-        print("SBMTD fetch stop \(stopId) via \(url.absoluteString) -> \(predictions.count) predictions")
-        for p in predictions {
-            let eta: String
-            if let m = p.minutes {
-                eta = m <= 0 ? "APPROACHING" : "\(m) MIN"
-            } else {
-                eta = "—"
-            }
-            print("  #\(p.route)  \(p.headsign)  \(eta)")
-        }
-#endif
         return predictions
     }
 
@@ -529,6 +557,33 @@ final class SBMTDBusTrackerProvider: DeparturesProvider {
             .replacingOccurrences(of: "\n\n", with: "\n")
 
         let text = squished.replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
+
+        // Extract vehicle annotations in order of appearance per route
+        // e.g., lines contain "(Vehicle 708)" or just "SCH" on a following line.
+        // We'll build a per-route queue we can pop from as we collect predictions.
+        var vehicleQueues: [String: [String]] = [:]
+        do {
+            let routeRx = try? NSRegularExpression(pattern: "#\\s*#?([0-9]{1,2}X?)", options: [.caseInsensitive])
+            let vehicleRx = try? NSRegularExpression(pattern: "\\((?:Vehicle\\s+)?([A-Z0-9]+)\\)", options: [.caseInsensitive])
+            // Split by <h2> sections to maintain order
+            let sections = squished.components(separatedBy: "<h2>")
+            for sec in sections {
+                // Find the route tag within the section
+                let ns = sec as NSString
+                if let routeRx = routeRx, let m = routeRx.firstMatch(in: sec, range: NSRange(location: 0, length: ns.length)) {
+                    let route = ns.substring(with: m.range(at: 1)).uppercased()
+                    var vID: String? = nil
+                    if let vehicleRx = vehicleRx, let vm = vehicleRx.firstMatch(in: sec, range: NSRange(location: 0, length: ns.length)) {
+                        vID = ns.substring(with: vm.range(at: 1)).uppercased()
+                    } else if sec.range(of: ">\n\n    \n    \n    &nbsp;SCH", options: .caseInsensitive) != nil || sec.range(of: ">SCH<", options: .caseInsensitive) != nil || sec.localizedCaseInsensitiveContains("SCH") {
+                        vID = "SCH"
+                    }
+                    if let vID = vID {
+                        vehicleQueues[route, default: []].append(vID)
+                    }
+                }
+            }
+        }
 
         // Two regex patterns for different formats:
         let pattern1 = "#\\s*#?([0-9]{1,2}X?)\\s+([^\\n\\r]+?)\\s+(APPROACHING|DUE|ARRIVING|\\d+\\s*MIN\\w*)"
@@ -553,7 +608,16 @@ final class SBMTDBusTrackerProvider: DeparturesProvider {
                         minutes = Int(rawMin[dig])
                     } else { minutes = nil }
                 }
-                results.append(.init(route: route, headsign: headsign, minutes: minutes))
+
+                let vID: String? = {
+                    if var q = vehicleQueues[route], !q.isEmpty {
+                        let first = q.removeFirst()
+                        vehicleQueues[route] = q
+                        return first
+                    }
+                    return nil
+                }()
+                results.append(.init(route: route, headsign: headsign, minutes: minutes, vehicleID: vID))
             }
         }
         collect(using: pattern1)
@@ -632,6 +696,8 @@ final class AppModel: ObservableObject {
 // MARK: - UI
 struct ContentView: View {
     @StateObject private var model = AppModel()
+    @StateObject private var vehiclesVM = VehicleViewModel()
+    @StateObject private var locationManager = LocationManager()
     @State private var showingSettings = false
     @State private var showingLookup = false
 
@@ -666,7 +732,7 @@ struct ContentView: View {
                                         Text(p.headsign)
                                             .font(.headline)
                                             .lineLimit(2)
-                                        Text(etaString(p.minutes))
+                                        Text(formattedSubtitle(for: p))
                                             .font(.subheadline)
                                             .foregroundStyle(.secondary)
                                     }
@@ -712,7 +778,7 @@ struct ContentView: View {
                 ToolbarItem(placement: .principal) {
                     VStack(spacing: 0) {
                         Text("SB MTD — Next buses").font(.headline)
-                        Text("Data Provided by Santa Barbara MTD")
+                        Text("Data by Santa Barbara MTD")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -726,7 +792,7 @@ struct ContentView: View {
                     }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button(action: { Task { await model.refresh() } }) {
+                    Button(action: { Task { await model.refresh(); vehiclesVM.refresh() } }) {
                         if model.isRefreshing { ProgressView() } else { Image(systemName: "arrow.clockwise") }
                     }
                     .accessibilityLabel("Refresh")
@@ -741,14 +807,23 @@ struct ContentView: View {
             .task {
                 // Initial fetch
                 await model.refresh()
+                vehiclesVM.refresh()
+                // Start vehicle refresh loop and request location
+                vehiclesVM.refresh()
+                locationManager.request()
+
                 // Auto-refresh every 30 seconds while the view is active
                 while !Task.isCancelled {
                     try? await Task.sleep(nanoseconds: 30 * 1_000_000_000)
                     if Task.isCancelled { break }
                     await model.refresh()
+                    vehiclesVM.refresh()
                 }
             }
-            .refreshable { await model.refresh() }
+            .refreshable {
+                await model.refresh()
+                vehiclesVM.refresh()
+            }
             .sheet(isPresented: $showingSettings) {
                 SettingsView()
                     .presentationDetents([.medium, .large])
@@ -822,6 +897,78 @@ struct ContentView: View {
             saveUserStops(stops)
         }
         Task { await model.refresh() }
+    }
+
+    // Added new helper methods for vehicle matching
+    private func normalizeVehicleID(_ s: String) -> String {
+        // Keep only letters and digits; uppercase for comparison
+        let allowed = s.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) }
+        return String(String.UnicodeScalarView(allowed)).uppercased()
+    }
+
+    private func matchVehicle(by vehicleID: String, in vehicles: [VehicleLocation]) -> VehicleLocation? {
+        let target = normalizeVehicleID(vehicleID)
+        // 1) Exact ID match (case-insensitive, normalized)
+        if let exact = vehicles.first(where: { normalizeVehicleID($0.id) == target }) { return exact }
+        // 2) Sometimes feeds include prefixes/suffixes; try contains as a last resort on ID only
+        if let contains = vehicles.first(where: { normalizeVehicleID($0.id).contains(target) || target.contains(normalizeVehicleID($0.id)) }) { return contains }
+        return nil
+    }
+
+    private func vehicleInfo(for p: Prediction) -> String? {
+        guard let vid = p.vehicleID, !vid.isEmpty else { return nil }
+        var parts: [String] = ["Vehicle \(vid)"]
+        if vid != "SCH", let userLoc = locationManager.location {
+#if DEBUG
+            print("User location for distance calc: lat=\(userLoc.coordinate.latitude), lon=\(userLoc.coordinate.longitude)")
+#endif
+            if let match = matchVehicle(by: vid, in: vehiclesVM.vehicles) {
+#if DEBUG
+                print("Matched vehicle for route #\(p.route) vid=\(vid): lat=\(match.latitude), lon=\(match.longitude)")
+#endif
+                let vLoc = CLLocation(latitude: match.latitude, longitude: match.longitude)
+                let meters = vLoc.distance(from: userLoc)
+                let miles = meters / 1609.344
+                let km = meters / 1000.0
+                let distStr: String
+                if Locale.current.usesMetricSystem { distStr = String(format: "%.1f km", km) } else { distStr = String(format: "%.1f mi", miles) }
+                parts.append("\(distStr) away")
+            }
+        }
+        return parts.joined(separator: " — ")
+    }
+
+    private func formattedSubtitle(for p: Prediction) -> String {
+        let eta = etaString(p.minutes)
+        guard let vid = p.vehicleID, !vid.isEmpty, vid != "SCH" else {
+            return eta
+        }
+        // Try to compute distance from user to this vehicle (fall back to just vehicle label)
+        var distancePart: String? = nil
+        if let userLoc = locationManager.location {
+#if DEBUG
+            print("User location for distance calc: lat=\(userLoc.coordinate.latitude), lon=\(userLoc.coordinate.longitude)")
+#endif
+            if let match = matchVehicle(by: vid, in: vehiclesVM.vehicles) {
+#if DEBUG
+                print("Matched vehicle for route #\(p.route) vid=\(vid): lat=\(match.latitude), lon=\(match.longitude)")
+#endif
+                let vLoc = CLLocation(latitude: match.latitude, longitude: match.longitude)
+                let meters = vLoc.distance(from: userLoc)
+                let miles = meters / 1609.344
+                let km = meters / 1000.0
+                if Locale.current.usesMetricSystem {
+                    distancePart = String(format: "%.1f km away", km)
+                } else {
+                    distancePart = String(format: "%.1f mi away", miles)
+                }
+            }
+        }
+        if let distancePart = distancePart {
+            return "\(eta) - Vehicle \(vid) - \(distancePart)"
+        } else {
+            return "\(eta) - Vehicle \(vid)"
+        }
     }
 }
 
@@ -1095,6 +1242,9 @@ private struct StopBoardDetailView: View {
     @State private var fetchedAt: Date? = nil
     private let provider: DeparturesProvider = SBMTDBusTrackerProvider()
 
+    @StateObject private var vehiclesVM = VehicleViewModel()
+    @StateObject private var locationManager = LocationManager()
+
     private enum PresentedMap: Identifiable {
         case all
         case route(String)
@@ -1120,7 +1270,7 @@ private struct StopBoardDetailView: View {
                                 Text(p.headsign)
                                     .font(.headline)
                                     .lineLimit(2)
-                                Text(etaString(p.minutes))
+                                Text(formattedSubtitle(for: p))
                                     .font(.subheadline)
                                     .foregroundStyle(.secondary)
                             }
@@ -1155,7 +1305,11 @@ private struct StopBoardDetailView: View {
                     .accessibilityLabel("Show vehicle map")
             }
         }
-        .task { await refresh() }
+        .task {
+            vehiclesVM.refresh()
+            locationManager.request()
+            await refresh()
+        }
         .refreshable { await refresh() }
         .sheet(item: $presentedMap) { item in
             switch item {
@@ -1186,9 +1340,11 @@ private struct StopBoardDetailView: View {
             let sorted = preds.sorted { (a, b) in (a.minutes ?? 9_999) < (b.minutes ?? 9_999) }
             predictions = sorted
             fetchedAt = Date()
+            vehiclesVM.refresh()
         } catch {
             predictions = []
             fetchedAt = Date()
+            vehiclesVM.refresh()
         }
     }
 
@@ -1207,6 +1363,74 @@ private struct StopBoardDetailView: View {
         if m <= 0 { return "Approaching" }
         if m == 1 { return "1 min" }
         return "\(m) min"
+    }
+
+    // Add local helper methods for vehicle matching (same as ContentView)
+    private func normalizeVehicleID(_ s: String) -> String {
+        let allowed = s.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) }
+        return String(String.UnicodeScalarView(allowed)).uppercased()
+    }
+
+    private func matchVehicle(by vehicleID: String, in vehicles: [VehicleLocation]) -> VehicleLocation? {
+        let target = normalizeVehicleID(vehicleID)
+        if let exact = vehicles.first(where: { normalizeVehicleID($0.id) == target }) { return exact }
+        if let contains = vehicles.first(where: { normalizeVehicleID($0.id).contains(target) || target.contains(normalizeVehicleID($0.id)) }) { return contains }
+        return nil
+    }
+
+    private func vehicleInfo(for p: Prediction) -> String? {
+        guard let vid = p.vehicleID, !vid.isEmpty else { return nil }
+        var parts: [String] = ["Vehicle \(vid)"]
+        if vid != "SCH", let userLoc = locationManager.location {
+#if DEBUG
+            print("User location for distance calc: lat=\(userLoc.coordinate.latitude), lon=\(userLoc.coordinate.longitude)")
+#endif
+            if let match = matchVehicle(by: vid, in: vehiclesVM.vehicles) {
+#if DEBUG
+                print("Matched vehicle for route #\(p.route) vid=\(vid): lat=\(match.latitude), lon=\(match.longitude)")
+#endif
+                let vLoc = CLLocation(latitude: match.latitude, longitude: match.longitude)
+                let meters = vLoc.distance(from: userLoc)
+                let miles = meters / 1609.344
+                let km = meters / 1000.0
+                let distStr: String
+                if Locale.current.usesMetricSystem { distStr = String(format: "%.1f km", km) } else { distStr = String(format: "%.1f mi", miles) }
+                parts.append("\(distStr) away")
+            }
+        }
+        return parts.joined(separator: " — ")
+    }
+
+    private func formattedSubtitle(for p: Prediction) -> String {
+        let eta = etaString(p.minutes)
+        guard let vid = p.vehicleID, !vid.isEmpty, vid != "SCH" else {
+            return eta
+        }
+        var distancePart: String? = nil
+        if let userLoc = locationManager.location {
+#if DEBUG
+            print("User location for distance calc: lat=\(userLoc.coordinate.latitude), lon=\(userLoc.coordinate.longitude)")
+#endif
+            if let match = matchVehicle(by: vid, in: vehiclesVM.vehicles) {
+#if DEBUG
+                print("Matched vehicle for route #\(p.route) vid=\(vid): lat=\(match.latitude), lon=\(match.longitude)")
+#endif
+                let vLoc = CLLocation(latitude: match.latitude, longitude: match.longitude)
+                let meters = vLoc.distance(from: userLoc)
+                let miles = meters / 1609.344
+                let km = meters / 1000.0
+                if Locale.current.usesMetricSystem {
+                    distancePart = String(format: "%.1f km away", km)
+                } else {
+                    distancePart = String(format: "%.1f mi away", miles)
+                }
+            }
+        }
+        if let distancePart = distancePart {
+            return "\(eta) - Vehicle \(vid) - \(distancePart)"
+        } else {
+            return "\(eta) - Vehicle \(vid)"
+        }
     }
 }
 
