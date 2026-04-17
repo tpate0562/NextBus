@@ -6,7 +6,20 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		75BAFA262F915B950057CA7F /* WidgetKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 75BAFA252F915B950057CA7F /* WidgetKit.framework */; };
+		75BAFA282F915B950057CA7F /* SwiftUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 75BAFA272F915B950057CA7F /* SwiftUI.framework */; };
+		75BAFA352F915B980057CA7F /* NextBusWidgetExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 75BAFA232F915B950057CA7F /* NextBusWidgetExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
+		75BAFA332F915B980057CA7F /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 75F5F05D2E849B7500004CF8 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 75BAFA222F915B950057CA7F;
+			remoteInfo = NextBusWidgetExtension;
+		};
 		75F5F0782E849B7700004CF8 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 75F5F05D2E849B7500004CF8 /* Project object */;
@@ -23,27 +36,61 @@
 		};
 /* End PBXContainerItemProxy section */
 
+/* Begin PBXCopyFilesBuildPhase section */
+		75BAFA3A2F915B980057CA7F /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				75BAFA352F915B980057CA7F /* NextBusWidgetExtension.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
+		75BAFA232F915B950057CA7F /* NextBusWidgetExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = NextBusWidgetExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		75BAFA252F915B950057CA7F /* WidgetKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WidgetKit.framework; path = System/Library/Frameworks/WidgetKit.framework; sourceTree = SDKROOT; };
+		75BAFA272F915B950057CA7F /* SwiftUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SwiftUI.framework; path = System/Library/Frameworks/SwiftUI.framework; sourceTree = SDKROOT; };
+		75BAFA442F915CA50057CA7F /* NextBusWidgetExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = NextBusWidgetExtension.entitlements; sourceTree = "<group>"; };
 		75F5F0652E849B7500004CF8 /* NextBus.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NextBus.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		75F5F0772E849B7700004CF8 /* NextBusTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = NextBusTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		75F5F0812E849B7700004CF8 /* NextBusUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = NextBusUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
-/* Begin PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
-		75F5F0972E84C42500004CF8 /* Exceptions for "NextBus" folder in "Compile Sources" phase from "NextBus" target */ = {
-			isa = PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet;
-			buildPhase = 75F5F0612E849B7500004CF8 /* Sources */;
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		75BAFA362F915B980057CA7F /* Exceptions for "NextBusWidget" folder in "NextBusWidgetExtension" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
+				Info.plist,
+			);
+			target = 75BAFA222F915B950057CA7F /* NextBusWidgetExtension */;
+		};
+		75BAFA432F915C700057CA7F /* Exceptions for "NextBus" folder in "NextBusWidgetExtension" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				SharedModels.swift,
 				stops.txt,
 			);
+			target = 75BAFA222F915B950057CA7F /* NextBusWidgetExtension */;
 		};
-/* End PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
+		75BAFA292F915B950057CA7F /* NextBusWidget */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				75BAFA362F915B980057CA7F /* Exceptions for "NextBusWidget" folder in "NextBusWidgetExtension" target */,
+			);
+			path = NextBusWidget;
+			sourceTree = "<group>";
+		};
 		75F5F0672E849B7500004CF8 /* NextBus */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
-				75F5F0972E84C42500004CF8 /* Exceptions for "NextBus" folder in "Compile Sources" phase from "NextBus" target */,
+				75BAFA432F915C700057CA7F /* Exceptions for "NextBus" folder in "NextBusWidgetExtension" target */,
 			);
 			path = NextBus;
 			sourceTree = "<group>";
@@ -61,6 +108,15 @@
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		75BAFA202F915B950057CA7F /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				75BAFA282F915B950057CA7F /* SwiftUI.framework in Frameworks */,
+				75BAFA262F915B950057CA7F /* WidgetKit.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		75F5F0622E849B7500004CF8 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -85,12 +141,24 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		75BAFA242F915B950057CA7F /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				75BAFA252F915B950057CA7F /* WidgetKit.framework */,
+				75BAFA272F915B950057CA7F /* SwiftUI.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
 		75F5F05C2E849B7500004CF8 = {
 			isa = PBXGroup;
 			children = (
+				75BAFA442F915CA50057CA7F /* NextBusWidgetExtension.entitlements */,
 				75F5F0672E849B7500004CF8 /* NextBus */,
 				75F5F07A2E849B7700004CF8 /* NextBusTests */,
 				75F5F0842E849B7700004CF8 /* NextBusUITests */,
+				75BAFA292F915B950057CA7F /* NextBusWidget */,
+				75BAFA242F915B950057CA7F /* Frameworks */,
 				75F5F0662E849B7500004CF8 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -101,6 +169,7 @@
 				75F5F0652E849B7500004CF8 /* NextBus.app */,
 				75F5F0772E849B7700004CF8 /* NextBusTests.xctest */,
 				75F5F0812E849B7700004CF8 /* NextBusUITests.xctest */,
+				75BAFA232F915B950057CA7F /* NextBusWidgetExtension.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -108,6 +177,28 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		75BAFA222F915B950057CA7F /* NextBusWidgetExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 75BAFA372F915B980057CA7F /* Build configuration list for PBXNativeTarget "NextBusWidgetExtension" */;
+			buildPhases = (
+				75BAFA1F2F915B950057CA7F /* Sources */,
+				75BAFA202F915B950057CA7F /* Frameworks */,
+				75BAFA212F915B950057CA7F /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				75BAFA292F915B950057CA7F /* NextBusWidget */,
+			);
+			name = NextBusWidgetExtension;
+			packageProductDependencies = (
+			);
+			productName = NextBusWidgetExtension;
+			productReference = 75BAFA232F915B950057CA7F /* NextBusWidgetExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 		75F5F0642E849B7500004CF8 /* NextBus */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 75F5F08B2E849B7700004CF8 /* Build configuration list for PBXNativeTarget "NextBus" */;
@@ -115,10 +206,12 @@
 				75F5F0612E849B7500004CF8 /* Sources */,
 				75F5F0622E849B7500004CF8 /* Frameworks */,
 				75F5F0632E849B7500004CF8 /* Resources */,
+				75BAFA3A2F915B980057CA7F /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				75BAFA342F915B980057CA7F /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				75F5F0672E849B7500004CF8 /* NextBus */,
@@ -183,9 +276,12 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
-				LastSwiftUpdateCheck = 2600;
+				LastSwiftUpdateCheck = 2640;
 				LastUpgradeCheck = 2600;
 				TargetAttributes = {
+					75BAFA222F915B950057CA7F = {
+						CreatedOnToolsVersion = 26.4;
+					};
 					75F5F0642E849B7500004CF8 = {
 						CreatedOnToolsVersion = 26.0;
 					};
@@ -216,11 +312,19 @@
 				75F5F0642E849B7500004CF8 /* NextBus */,
 				75F5F0762E849B7700004CF8 /* NextBusTests */,
 				75F5F0802E849B7700004CF8 /* NextBusUITests */,
+				75BAFA222F915B950057CA7F /* NextBusWidgetExtension */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		75BAFA212F915B950057CA7F /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		75F5F0632E849B7500004CF8 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -245,6 +349,13 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		75BAFA1F2F915B950057CA7F /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		75F5F0612E849B7500004CF8 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -269,6 +380,11 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		75BAFA342F915B980057CA7F /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 75BAFA222F915B950057CA7F /* NextBusWidgetExtension */;
+			targetProxy = 75BAFA332F915B980057CA7F /* PBXContainerItemProxy */;
+		};
 		75F5F0792E849B7700004CF8 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = 75F5F0642E849B7500004CF8 /* NextBus */;
@@ -282,6 +398,70 @@
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
+		75BAFA382F915B980057CA7F /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
+				CODE_SIGN_ENTITLEMENTS = NextBusWidgetExtension.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 54D226W6J3;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = NextBusWidget/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = NextBusWidget;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = tejaspatel.NextBus.NextBusWidget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		75BAFA392F915B980057CA7F /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
+				CODE_SIGN_ENTITLEMENTS = NextBusWidgetExtension.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 54D226W6J3;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = NextBusWidget/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = NextBusWidget;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = tejaspatel.NextBus.NextBusWidget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
 		75F5F0892E849B7700004CF8 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -408,6 +588,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = NextBus/NextBus.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 54D226W6J3;
@@ -424,7 +605,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.1;
+				MARKETING_VERSION = 2.3;
 				PRODUCT_BUNDLE_IDENTIFIER = tejaspatel.NextBus;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -442,6 +623,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = NextBus/NextBus.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 54D226W6J3;
@@ -458,7 +640,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.1;
+				MARKETING_VERSION = 2.3;
 				PRODUCT_BUNDLE_IDENTIFIER = tejaspatel.NextBus;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -560,6 +742,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		75BAFA372F915B980057CA7F /* Build configuration list for PBXNativeTarget "NextBusWidgetExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				75BAFA382F915B980057CA7F /* Debug */,
+				75BAFA392F915B980057CA7F /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		75F5F0602E849B7500004CF8 /* Build configuration list for PBXProject "NextBus" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

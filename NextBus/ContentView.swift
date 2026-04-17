@@ -14,344 +14,8 @@
 import SwiftUI
 import Combine
 import MapKit
-import Compression
 import CoreLocation
 
-// MARK: - User settings
-struct UserStopConfig: Identifiable, Codable, Hashable {
-    var id: String            // stop code
-    var label: String         // user label
-    var selectedRoutes: Set<String> = [] // empty means all
-    var headsignIncludes: String = ""   // optional contains filter
-    var enabled: Bool = true
-}
-
-fileprivate let USER_STOPS_KEY = "userStops.v1"
-fileprivate let USE_CUSTOM_STOPS_ONLY_KEY = "useCustomStopsOnly.v1"
-
-fileprivate let GTFS_RT_URL_STRING = "https://bustracker.sbmtd.gov/gtfsrt/vehicles" // TODO: replace with real GTFS-RT VehiclePositions URL
-
-fileprivate func loadUserStops() -> [UserStopConfig] {
-    if let data = UserDefaults.standard.data(forKey: USER_STOPS_KEY) {
-        if let decoded = try? JSONDecoder().decode([UserStopConfig].self, from: data) {
-            return decoded
-        }
-    }
-    return []
-}
-
-fileprivate func saveUserStops(_ stops: [UserStopConfig]) {
-    if let data = try? JSONEncoder().encode(stops) {
-        UserDefaults.standard.set(data, forKey: USER_STOPS_KEY)
-    }
-}
-
-fileprivate func loadUseCustomStopsOnly() -> Bool {
-    UserDefaults.standard.bool(forKey: USE_CUSTOM_STOPS_ONLY_KEY)
-}
-
-fileprivate func saveUseCustomStopsOnly(_ flag: Bool) {
-    UserDefaults.standard.set(flag, forKey: USE_CUSTOM_STOPS_ONLY_KEY)
-}
-
-// MARK: - Vehicle locations (GTFS-RT manual decoder)
-
-// Public model
-struct VehicleLocation: Identifiable, Equatable {
-    let id: String
-    let routeID: String?
-    let tripID: String?
-    let latitude: Double
-    let longitude: Double
-    let bearing: Double?
-    let speedMetersPerSecond: Double?
-    let timestamp: Date?
-
-    var coordinates: (Double, Double) { (latitude, longitude) }
-}
-
-fileprivate let _iso8601Fractional: ISO8601DateFormatter = {
-    let f = ISO8601DateFormatter()
-    f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    return f
-}()
-
-fileprivate func debugDumpVehicles(_ vehicles: [VehicleLocation]) {
-#if DEBUG
-    print("\n===== GTFS-RT VehiclePositions decoded: \(vehicles.count) vehicles =====")
-    for v in vehicles {
-        let ts = v.timestamp.map { _iso8601Fractional.string(from: $0) } ?? "nil"
-        let bearingStr = v.bearing.map { String(format: "%.0f°", $0) } ?? "nil"
-        let speedMS = v.speedMetersPerSecond.map { String(format: "%.1f m/s", $0) } ?? "nil"
-        let speedMPH = v.speedMetersPerSecond.map { String(format: "%.1f mph", $0 * 2.236936) } ?? "nil"
-        let latStr = String(format: "%.6f", v.latitude)
-        let lonStr = String(format: "%.6f", v.longitude)
-        print("id=\(v.id) route=\(v.routeID ?? "nil") trip=\(v.tripID ?? "nil") lat=\(latStr) lon=\(lonStr) bearing=\(bearingStr) speed=\(speedMS) (\(speedMPH)) ts=\(ts)")
-    }
-    print("===== END GTFS-RT dump =====\n")
-#endif
-}
-
-// Internal message models (minimal GTFS-RT subset)
-private struct Position { var latitude: Double?; var longitude: Double?; var bearing: Double?; var speed: Double? }
-private struct TripDescriptor { var tripID: String?; var routeID: String? }
-private struct VehicleDescriptor { var id: String? }
-private struct VehiclePositionMessage { var trip: TripDescriptor?; var position: Position?; var vehicle: VehicleDescriptor?; var timestamp: UInt64? }
-private struct FeedEntity { var id: String?; var vehicle: VehiclePositionMessage? }
-
-// Minimal Protobuf reader
-private struct ProtobufReader {
-    let data: Data
-    private(set) var offset: Int = 0
-    var isAtEnd: Bool { offset >= data.count }
-    init(data: Data) { self.data = data }
-    mutating func readVarint() -> UInt64? {
-        var result: UInt64 = 0
-        var shift: UInt64 = 0
-        while offset < data.count && shift < 64 {
-            let byte = data[offset]
-            offset += 1
-            result |= UInt64(byte & 0x7F) << shift
-            if (byte & 0x80) == 0 { return result }
-            shift += 7
-        }
-        return nil
-    }
-    mutating func readFixed32() -> UInt32? {
-        guard offset + 4 <= data.count else { return nil }
-        let slice = data[offset ..< offset + 4]
-        offset += 4
-        var value: UInt32 = 0
-        for (i, b) in slice.enumerated() { value |= UInt32(b) << (8 * i) }
-        return value
-    }
-    mutating func readLengthDelimited() -> Data? {
-        guard let len64 = readVarint() else { return nil }
-        let len = Int(len64)
-        guard offset + len <= data.count else { return nil }
-        let sub = data.subdata(in: offset ..< offset + len)
-        offset += len
-        return sub
-    }
-    mutating func readString() -> String? { guard let bytes = readLengthDelimited() else { return nil }; return String(data: bytes, encoding: .utf8) }
-    mutating func readKey() -> (fieldNumber: Int, wireType: Int)? {
-        guard let key = readVarint() else { return nil }
-        let wireType = Int(key & 0x7)
-        let fieldNumber = Int(key >> 3)
-        return (fieldNumber, wireType)
-    }
-    mutating func skipField(wireType: Int) {
-        switch wireType {
-        case 0: _ = readVarint()
-        case 1: offset = min(data.count, offset + 8)
-        case 2: if let len64 = readVarint() { let len = Int(len64); offset = min(data.count, offset + len) }
-        case 5: offset = min(data.count, offset + 4)
-        default: break
-        }
-    }
-}
-
-// Parsers for GTFS-RT subset
-private func parsePosition(_ data: Data) -> Position {
-    var reader = ProtobufReader(data: data)
-    var position = Position()
-    while let (field, wire) = reader.readKey() {
-        switch field {
-        case 1: // latitude (float, fixed32)
-            if wire == 5, let bits = reader.readFixed32() { position.latitude = Double(Float(bitPattern: bits)) } else { reader.skipField(wireType: wire) }
-        case 2: // longitude (float, fixed32)
-            if wire == 5, let bits = reader.readFixed32() { position.longitude = Double(Float(bitPattern: bits)) } else { reader.skipField(wireType: wire) }
-        case 3: // bearing (float, fixed32)
-            if wire == 5, let bits = reader.readFixed32() { position.bearing = Double(Float(bitPattern: bits)) } else { reader.skipField(wireType: wire) }
-        case 4: // odometer (double, fixed64) — not used here; skip
-            reader.skipField(wireType: wire)
-        case 5: // speed (float, fixed32)
-            if wire == 5, let bits = reader.readFixed32() { position.speed = Double(Float(bitPattern: bits)) } else { reader.skipField(wireType: wire) }
-        default:
-            reader.skipField(wireType: wire)
-        }
-    }
-    return position
-}
-
-private func parseTripDescriptor(_ data: Data) -> TripDescriptor {
-    var reader = ProtobufReader(data: data)
-    var trip = TripDescriptor()
-    while let (field, wire) = reader.readKey() {
-        switch field {
-        case 1: if wire == 2 { trip.tripID = reader.readString() } else { reader.skipField(wireType: wire) }
-        case 5: if wire == 2 { trip.routeID = reader.readString() } else { reader.skipField(wireType: wire) }
-        default: reader.skipField(wireType: wire)
-        }
-    }
-    return trip
-}
-
-private func parseVehicleDescriptor(_ data: Data) -> VehicleDescriptor {
-    var reader = ProtobufReader(data: data)
-    var vehicle = VehicleDescriptor()
-    while let (field, wire) = reader.readKey() {
-        switch field {
-        case 1: if wire == 2 { vehicle.id = reader.readString() } else { reader.skipField(wireType: wire) }
-        default: reader.skipField(wireType: wire)
-        }
-    }
-    return vehicle
-}
-
-private func parseVehiclePosition(_ data: Data) -> VehiclePositionMessage {
-    var reader = ProtobufReader(data: data)
-    var vp = VehiclePositionMessage()
-    while let (field, wire) = reader.readKey() {
-        switch field {
-        case 1: // trip
-            if wire == 2, let sub = reader.readLengthDelimited() { vp.trip = parseTripDescriptor(sub) } else { reader.skipField(wireType: wire) }
-        case 2: // position
-            if wire == 2, let sub = reader.readLengthDelimited() { vp.position = parsePosition(sub) } else { reader.skipField(wireType: wire) }
-        case 5: // timestamp (varint)
-            if wire == 0, let ts = reader.readVarint() { vp.timestamp = ts } else { reader.skipField(wireType: wire) }
-        case 8: // vehicle descriptor
-            if wire == 2, let sub = reader.readLengthDelimited() { vp.vehicle = parseVehicleDescriptor(sub) } else { reader.skipField(wireType: wire) }
-        default:
-            reader.skipField(wireType: wire)
-        }
-    }
-    return vp
-}
-
-private func parseFeedEntity(_ data: Data) -> FeedEntity {
-    var reader = ProtobufReader(data: data)
-    var entity = FeedEntity()
-    while let (field, wire) = reader.readKey() {
-        switch field {
-        case 1: // id
-            if wire == 2 { entity.id = reader.readString() } else { reader.skipField(wireType: wire) }
-        case 4: // vehicle (length-delimited, field 4)
-            if wire == 2, let sub = reader.readLengthDelimited() { entity.vehicle = parseVehiclePosition(sub) } else { reader.skipField(wireType: wire) }
-        default:
-            reader.skipField(wireType: wire)
-        }
-    }
-    return entity
-}
-
-// Public decoder
-enum GTFSRTManualDecoder {
-    static func decodeVehicles(from data: Data) -> [VehicleLocation] {
-        var reader = ProtobufReader(data: data)
-        var locations: [VehicleLocation] = []
-        while let (field, wire) = reader.readKey() {
-            if field == 2 && wire == 2, let entityData = reader.readLengthDelimited() {
-                let entity = parseFeedEntity(entityData)
-                guard let vp = entity.vehicle, let pos = vp.position, let lat = pos.latitude, let lon = pos.longitude else { continue }
-                let vehID = vp.vehicle?.id ?? entity.id ?? ""
-                let routeID = vp.trip?.routeID
-                let tripID = vp.trip?.tripID
-                let bearing = pos.bearing
-                let speed = pos.speed
-                let tsDate: Date? = vp.timestamp.map { Date(timeIntervalSince1970: TimeInterval($0)) }
-                let location = VehicleLocation(id: vehID, routeID: routeID, tripID: tripID, latitude: lat, longitude: lon, bearing: bearing, speedMetersPerSecond: speed, timestamp: tsDate)
-                locations.append(location)
-            } else {
-                reader.skipField(wireType: wire)
-            }
-        }
-        return locations
-    }
-}
-
-// Optional: gunzip helper for raw gzip payloads without Content-Encoding
-private func gunzipIfNeeded(_ data: Data) -> Data {
-    // gzip magic header 0x1f 0x8b
-    guard data.count >= 2, data[0] == 0x1f, data[1] == 0x8b else { return data }
-
-    var decoded = Data()
-
-    var stream = compression_stream(dst_ptr: UnsafeMutablePointer<UInt8>(bitPattern: 0)!, dst_size: 0, src_ptr: UnsafePointer<UInt8>(bitPattern: 0)!, src_size: 0, state: nil)
-    var status = compression_stream_init(&stream, COMPRESSION_STREAM_DECODE, COMPRESSION_ZLIB)
-    guard status != COMPRESSION_STATUS_ERROR else { return data }
-    defer { compression_stream_destroy(&stream) }
-
-    return data.withUnsafeBytes { (srcBuf: UnsafeRawBufferPointer) in
-        var srcIndex = 0
-        decoded.removeAll(keepingCapacity: true)
-
-        while srcIndex < data.count {
-            let srcChunk = min(64 * 1024, data.count - srcIndex)
-            stream.src_ptr = srcBuf.baseAddress!.advanced(by: srcIndex).assumingMemoryBound(to: UInt8.self)
-            stream.src_size = srcChunk
-            srcIndex += srcChunk
-
-            var dstData = Data(count: 64 * 1024)
-            dstData.withUnsafeMutableBytes { dstBuf in
-                stream.dst_ptr = dstBuf.baseAddress!.assumingMemoryBound(to: UInt8.self)
-                stream.dst_size = dstBuf.count
-
-                while true {
-                    status = compression_stream_process(&stream, srcIndex >= data.count ? Int32(COMPRESSION_STREAM_FINALIZE.rawValue) : 0)
-                    let produced = dstBuf.count - stream.dst_size
-                    if produced > 0 {
-                        if let base = dstBuf.bindMemory(to: UInt8.self).baseAddress { decoded.append(base, count: produced) }
-                        stream.dst_ptr = dstBuf.baseAddress!.assumingMemoryBound(to: UInt8.self)
-                        stream.dst_size = dstBuf.count
-                    }
-                    if status == COMPRESSION_STATUS_OK && stream.src_size == 0 {
-                        break // need more input
-                    } else if status == COMPRESSION_STATUS_END {
-                        return
-                    } else if status == COMPRESSION_STATUS_ERROR {
-                        decoded.removeAll()
-                        return
-                    }
-                }
-            }
-        }
-        return decoded.isEmpty ? data : decoded
-    }
-}
-
-final class MTDVehicleService {
-    private let session: URLSession
-    init(session: URLSession = .shared) { self.session = session }
-    func fetchVehicleLocations(from url: URL, completion: @escaping (Result<[VehicleLocation], Error>) -> Void) {
-        let task = session.dataTask(with: url) { data, response, error in
-            if let error = error { completion(.failure(error)); return }
-#if DEBUG
-            if let http = response as? HTTPURLResponse {
-                let lenHeader = http.value(forHTTPHeaderField: "Content-Length") ?? "(none)"
-                print("GTFS-RT fetch: status=\(http.statusCode) mime=\(http.mimeType ?? "nil") content-length=\(lenHeader)")
-            } else {
-                print("GTFS-RT fetch: non-HTTP response")
-            }
-#endif
-            guard let data = data else {
-                let err = NSError(domain: "MTDVehicleService", code: -1, userInfo: [NSLocalizedDescriptionKey: "No data"])
-                completion(.failure(err)); return
-            }
-
-            // Try decode as-is
-            var vehicles = GTFSRTManualDecoder.decodeVehicles(from: data)
-
-            // Fallback: gunzip if the payload appears to be gzipped without Content-Encoding
-            if vehicles.isEmpty {
-                let unzipped = gunzipIfNeeded(data)
-                if unzipped != data {
-                    vehicles = GTFSRTManualDecoder.decodeVehicles(from: unzipped)
-                }
-            }
-
-#if DEBUG
-            if vehicles.isEmpty {
-                let prefix = data.prefix(24)
-                print("GTFS-RT decode yielded 0 vehicles. First 24 bytes: \(prefix.map { String(format: "%02x", $0) }.joined(separator: " "))")
-            }
-            debugDumpVehicles(vehicles)
-#endif
-            completion(.success(vehicles))
-        }
-        task.resume()
-    }
-}
 
 @MainActor
 final class VehicleViewModel: ObservableObject {
@@ -431,6 +95,7 @@ private struct VehicleAnnotationView: View {
 // Map view for vehicles
 private struct VehicleMapView: View {
     @StateObject private var vm = VehicleViewModel()
+    @StateObject private var locManager = LocationManager()
     let title: String
     let routeFilter: String? // if set, only show vehicles whose routeID matches
 
@@ -448,18 +113,50 @@ private struct VehicleMapView: View {
                                 .accessibilityLabel("Route \(v.routeID ?? "unknown") vehicle at latitude \(v.latitude), longitude \(v.longitude)")
                         }
                     }
+                    // Show the user's current location as a blue pulsing dot
+                    if let userLoc = locManager.location {
+                        Annotation("My Location", coordinate: userLoc.coordinate) {
+                            ZStack {
+                                Circle()
+                                    .fill(Color.blue.opacity(0.2))
+                                    .frame(width: 32, height: 32)
+                                Circle()
+                                    .fill(Color.blue)
+                                    .frame(width: 14, height: 14)
+                                Circle()
+                                    .stroke(Color.white, lineWidth: 2.5)
+                                    .frame(width: 14, height: 14)
+                            }
+                            .accessibilityLabel("Your current location")
+                        }
+                    }
                 }
                 .onChange(of: vm.vehicles) { _ in updateRegionToFit() }
                 .task { await autoRefreshLoop() }
                 .overlay(alignment: .topTrailing) {
-                    Button { vm.refresh() } label: {
-                        Image(systemName: "arrow.clockwise").padding(8).background(.thinMaterial).clipShape(Circle())
-                    }.padding()
+                    VStack(spacing: 10) {
+                        Button { vm.refresh() } label: {
+                            Image(systemName: "arrow.clockwise")
+                                .padding(8)
+                                .background(.thinMaterial)
+                                .clipShape(Circle())
+                        }
+                        Button { centerOnUserLocation() } label: {
+                            Image(systemName: "location.fill")
+                                .padding(8)
+                                .background(.thinMaterial)
+                                .clipShape(Circle())
+                        }
+                    }
+                    .padding()
                 }
             }
             .navigationTitle(title)
             .toolbar { ToolbarItem(placement: .topBarLeading) { CloseButton() } }
-            .onAppear { vm.refresh() }
+            .onAppear {
+                vm.refresh()
+                locManager.request()
+            }
         }
     }
 
@@ -479,6 +176,18 @@ private struct VehicleMapView: View {
         region = MKCoordinateRegion(center: center, span: span)
     }
 
+    private func centerOnUserLocation() {
+        guard let userLoc = locManager.location else {
+            // Re-request in case permissions weren't granted yet
+            locManager.request()
+            return
+        }
+        region = MKCoordinateRegion(
+            center: userLoc.coordinate,
+            span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
+        )
+    }
+
     private func autoRefreshLoop() async {
         while true {
             if Task.isCancelled { break }
@@ -490,163 +199,6 @@ private struct VehicleMapView: View {
 
 private struct CloseButton: View { @Environment(\.dismiss) var dismiss; var body: some View { Button("Close") { dismiss() } } }
 
-// MARK: - Config
-fileprivate enum Routes: String, CaseIterable {
-    case r11 = "11"
-    case r27 = "27"
-    case r28 = "28"
-    case r24X = "24X"
-}
-
-struct Stop: Identifiable, Hashable {
-    let id: String        // SBMTD BusTracker stop id
-    let label: String     // UI label
-    let purpose: Purpose
-    enum Purpose { case storkeAndSierraMadre, ucsbElings, ucsbNorthHall, custom }
-}
-
-// MARK: - Models
-struct StopBoard: Identifiable, Hashable {
-    let id = UUID()
-    let stop: Stop
-    let predictions: [Prediction]
-    let fetchedAt: Date
-}
-
-struct Prediction: Identifiable, Hashable {
-    let id = UUID()
-    let route: String       // e.g. "11", "27", "28", "24X"
-    let headsign: String    // e.g. "UCSB North Hall", "Downtown SB", "Camino Real Mkt"
-    let minutes: Int?       // nil if not parsable; 0 for APPROACHING/DUE
-    let vehicleID: String?
-}
-
-// MARK: - Provider abstraction
-protocol DeparturesProvider {
-    func fetch(stopId: String) async throws -> [Prediction]
-}
-
-// MARK: - SBMTD BusTracker HTML provider (no key required)
-// Endpoint pattern: https://bustracker.sbmtd.gov/bustime/wireless/html/eta.jsp?route=---&direction=---&displaydirection=---&stop=---&findstop=on&selectedRtpiFeeds=&id=STOPID
-// We parse simple "#<route> <headsign> <N MIN | APPROACHING | DUE>" rows.
-final class SBMTDBusTrackerProvider: DeparturesProvider {
-    func fetch(stopId: String) async throws -> [Prediction] {
-        // Request the full departure board by stop ID using the canonical query shape.
-        let url = URL(string: "https://bustracker.sbmtd.gov/bustime/wireless/html/eta.jsp?route=---&direction=---&displaydirection=---&stop=---&findstop=on&selectedRtpiFeeds=&id=\(stopId)")!
-        let (data, response) = try await URLSession.shared.data(from: url)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
-              let html = String(data: data, encoding: .utf8), !html.isEmpty else {
-            return []
-        }
-
-        let predictions = parse(html: html)
-        return predictions
-    }
-
-    private func parse(html: String) -> [Prediction] {
-        // Extremely lightweight parsing: look for blocks that start with "##  #" and then capture route, headsign, minutes.
-        // Example snippets:
-        //   ##  #28  UCSB North Hall   5 MIN
-        //   ##  #11  Downtown SB   APPROACHING
-        //   ##  #24X  UCSB / Camino Real Mkt   19 MIN
-        var results: [Prediction] = []
-
-        // Normalize whitespace to simplify regex.
-        let squished = html.replacingOccurrences(of: "\r", with: "")
-            .replacingOccurrences(of: "&nbsp;", with: " ")
-            .replacingOccurrences(of: "\n\n", with: "\n")
-
-        let text = squished.replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
-
-        // Extract vehicle annotations in order of appearance per route
-        // e.g., lines contain "(Vehicle 708)" or just "SCH" on a following line.
-        // We'll build a per-route queue we can pop from as we collect predictions.
-        var vehicleQueues: [String: [String]] = [:]
-        do {
-            let routeRx = try? NSRegularExpression(pattern: "#\\s*#?([0-9]{1,2}X?)", options: [.caseInsensitive])
-            let vehicleRx = try? NSRegularExpression(pattern: "\\((?:Vehicle\\s+)?([A-Z0-9]+)\\)", options: [.caseInsensitive])
-            // Split by <h2> sections to maintain order
-            let sections = squished.components(separatedBy: "<h2>")
-            for sec in sections {
-                // Find the route tag within the section
-                let ns = sec as NSString
-                if let routeRx = routeRx, let m = routeRx.firstMatch(in: sec, range: NSRange(location: 0, length: ns.length)) {
-                    let route = ns.substring(with: m.range(at: 1)).uppercased()
-                    var vID: String? = nil
-                    if let vehicleRx = vehicleRx, let vm = vehicleRx.firstMatch(in: sec, range: NSRange(location: 0, length: ns.length)) {
-                        vID = ns.substring(with: vm.range(at: 1)).uppercased()
-                    } else if sec.range(of: ">\n\n    \n    \n    &nbsp;SCH", options: .caseInsensitive) != nil || sec.range(of: ">SCH<", options: .caseInsensitive) != nil || sec.localizedCaseInsensitiveContains("SCH") {
-                        vID = "SCH"
-                    }
-                    if let vID = vID {
-                        vehicleQueues[route, default: []].append(vID)
-                    }
-                }
-            }
-        }
-
-        // Two regex patterns for different formats:
-        let pattern1 = "#\\s*#?([0-9]{1,2}X?)\\s+([^\\n\\r]+?)\\s+(APPROACHING|DUE|ARRIVING|\\d+\\s*MIN\\w*)"
-        let pattern2 = "(?m)^\\s*([0-9]{1,2}X?)\\s+([^\\n\\r]+?)\\s+(APPROACHING|DUE|ARRIVING|\\d+\\s*MIN\\w*)"
-
-        func collect(using pattern: String) {
-            guard let rx = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return }
-            let ns = text as NSString
-            let matches = rx.matches(in: text, options: [], range: NSRange(location: 0, length: ns.length))
-            for m in matches {
-                guard m.numberOfRanges >= 4 else { continue }
-                let route = ns.substring(with: m.range(at: 1)).uppercased()
-                var headsign = ns.substring(with: m.range(at: 2)).trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
-                headsign = headsign.replacingOccurrences(of: "\u{00A0}", with: " ")
-                let rawMin = ns.substring(with: m.range(at: 3)).uppercased()
-
-                let minutes: Int?
-                if rawMin.contains("APPROACHING") || rawMin.contains("DUE") || rawMin.contains("ARRIVING") { minutes = 0 }
-                else {
-                    // Extract first integer found (handles MIN, MINS, MINUTES, etc.)
-                    if let dig = rawMin.range(of: "[0-9]+", options: .regularExpression) {
-                        minutes = Int(rawMin[dig])
-                    } else { minutes = nil }
-                }
-
-                let vID: String? = {
-                    if var q = vehicleQueues[route], !q.isEmpty {
-                        let first = q.removeFirst()
-                        vehicleQueues[route] = q
-                        return first
-                    }
-                    return nil
-                }()
-                results.append(.init(route: route, headsign: headsign, minutes: minutes, vehicleID: vID))
-            }
-        }
-        collect(using: pattern1)
-        if results.isEmpty { collect(using: pattern2) }
-
-#if DEBUG
-        if results.isEmpty {
-            let preview = text.count > 600 ? String(text.prefix(600)) + "…" : text
-            print("SBMTD parse: no matches found; text preview: \(preview)")
-        }
-#endif
-        return results
-    }
-}
-
-// MARK: - Direction filter heuristics
-fileprivate func towardStorkeElColegio(_ p: Prediction) -> Bool {
-    // We want trips heading toward the Storke & El Colegio area.
-    // Common headsigns that move in that direction: "UCSB", "Camino Real", "Isla Vista", "Storke", "Marketplace".
-    let h = p.headsign.lowercased()
-    return h.contains("ucsb") || h.contains("camino real") || h.contains("isla vista") || h.contains("storke") || h.contains("market")
-}
-
-fileprivate func towardCaminoRealMarket(_ p: Prediction) -> Bool {
-    // Strictly prefer trips heading toward Camino Real Market / Marketplace.
-    // Common headsign variants observed: "Camino Real", "Camino Real Mkt", "Camino Real Market", "Marketplace".
-    let h = p.headsign.lowercased()
-    return h.contains("camino real mkt") || h.contains("marketplace") || h.contains("market") || h.contains("mkt")
-}
 
 // MARK: - ViewModel
 @MainActor
@@ -805,6 +357,11 @@ struct ContentView: View {
                 }
             }
             .task {
+                // Migrate data from UserDefaults.standard → App Group (one-time)
+                migrateUserDefaultsToAppGroupIfNeeded()
+                // Backfill stop coordinates for widget distance
+                migrateStopCoordinates()
+
                 // Initial fetch
                 await model.refresh()
                 vehiclesVM.refresh()
@@ -899,21 +456,6 @@ struct ContentView: View {
         Task { await model.refresh() }
     }
 
-    // Added new helper methods for vehicle matching
-    private func normalizeVehicleID(_ s: String) -> String {
-        // Keep only letters and digits; uppercase for comparison
-        let allowed = s.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) }
-        return String(String.UnicodeScalarView(allowed)).uppercased()
-    }
-
-    private func matchVehicle(by vehicleID: String, in vehicles: [VehicleLocation]) -> VehicleLocation? {
-        let target = normalizeVehicleID(vehicleID)
-        // 1) Exact ID match (case-insensitive, normalized)
-        if let exact = vehicles.first(where: { normalizeVehicleID($0.id) == target }) { return exact }
-        // 2) Sometimes feeds include prefixes/suffixes; try contains as a last resort on ID only
-        if let contains = vehicles.first(where: { normalizeVehicleID($0.id).contains(target) || target.contains(normalizeVehicleID($0.id)) }) { return contains }
-        return nil
-    }
 
     private func vehicleInfo(for p: Prediction) -> String? {
         guard let vid = p.vehicleID, !vid.isEmpty else { return nil }
@@ -972,6 +514,36 @@ struct ContentView: View {
     }
 }
 
+// MARK: - One-time migration: backfill stop coordinates
+/// Fills in stopLat/stopLon for any saved UserStopConfig entries that are missing coordinates.
+/// Safe to call multiple times; only writes if changes are needed.
+private func migrateStopCoordinates() {
+    var stops = loadUserStops()
+    let needsMigration = stops.contains { $0.stopLat == nil || $0.stopLon == nil }
+    guard needsMigration else { return }
+
+    let catalog = StopCatalog.load()
+    var changed = false
+    for i in stops.indices {
+        if stops[i].stopLat == nil || stops[i].stopLon == nil {
+            // Try StopCatalog first
+            if let entry = catalog.first(where: { $0.code == stops[i].id }), let lat = entry.lat, let lon = entry.lon {
+                stops[i].stopLat = lat
+                stops[i].stopLon = lon
+                changed = true
+            }
+            // Fallback: direct lookup from stops.txt
+            else if let coords = lookupStopCoordinates(stopCode: stops[i].id) {
+                stops[i].stopLat = coords.lat
+                stops[i].stopLon = coords.lon
+                changed = true
+            }
+        }
+    }
+    if changed {
+        saveUserStops(stops)
+    }
+}
 private struct ElapsedSinceView: View {
     let since: Date
     var body: some View {
@@ -1101,7 +673,16 @@ struct SettingsView: View {
         let id = newStopId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !id.isEmpty else { return }
         let label = newStopLabel.trimmingCharacters(in: .whitespacesAndNewlines)
-        let cfg = UserStopConfig(id: id, label: label.isEmpty ? id : label, selectedRoutes: [], headsignIncludes: "", enabled: true)
+        var cfg = UserStopConfig(id: id, label: label.isEmpty ? id : label, selectedRoutes: [], headsignIncludes: "", enabled: true)
+        // Look up coordinates for widget distance
+        if let entry = StopCatalog.load().first(where: { $0.code == id }) {
+            cfg.stopLat = entry.lat
+            cfg.stopLon = entry.lon
+            if cfg.label == id { cfg.label = entry.name } // auto-fill label
+        } else if let coords = lookupStopCoordinates(stopCode: id) {
+            cfg.stopLat = coords.lat
+            cfg.stopLon = coords.lon
+        }
         stops.append(cfg)
         newStopId = ""
         newStopLabel = ""
@@ -1226,7 +807,9 @@ private struct StopLookupView: View {
     private func addToHome(_ entry: StopCatalogEntry) {
         var stops = loadUserStops()
         if !stops.contains(where: { $0.id == entry.code }) {
-            let cfg = UserStopConfig(id: entry.code, label: entry.name, selectedRoutes: [], headsignIncludes: "", enabled: true)
+            var cfg = UserStopConfig(id: entry.code, label: entry.name, selectedRoutes: [], headsignIncludes: "", enabled: true)
+            cfg.stopLat = entry.lat
+            cfg.stopLon = entry.lon
             stops.append(cfg)
             saveUserStops(stops)
         }
@@ -1365,18 +948,6 @@ private struct StopBoardDetailView: View {
         return "\(m) min"
     }
 
-    // Add local helper methods for vehicle matching (same as ContentView)
-    private func normalizeVehicleID(_ s: String) -> String {
-        let allowed = s.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) }
-        return String(String.UnicodeScalarView(allowed)).uppercased()
-    }
-
-    private func matchVehicle(by vehicleID: String, in vehicles: [VehicleLocation]) -> VehicleLocation? {
-        let target = normalizeVehicleID(vehicleID)
-        if let exact = vehicles.first(where: { normalizeVehicleID($0.id) == target }) { return exact }
-        if let contains = vehicles.first(where: { normalizeVehicleID($0.id).contains(target) || target.contains(normalizeVehicleID($0.id)) }) { return contains }
-        return nil
-    }
 
     private func vehicleInfo(for p: Prediction) -> String? {
         guard let vid = p.vehicleID, !vid.isEmpty else { return nil }

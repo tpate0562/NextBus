@@ -4,11 +4,15 @@ public struct StopCatalogEntry: Identifiable, Hashable, Codable {
     public let id: String      // internal stable id (e.g., GTFS stop_id)
     public let code: String    // public-facing stop code printed on signs
     public let name: String    // human-readable stop name
+    public let lat: Double?    // stop latitude
+    public let lon: Double?    // stop longitude
 
-    public init(id: String, code: String, name: String) {
+    public init(id: String, code: String, name: String, lat: Double? = nil, lon: Double? = nil) {
         self.id = id
         self.code = code
         self.name = name
+        self.lat = lat
+        self.lon = lon
     }
 }
 
@@ -681,7 +685,9 @@ public enum StopCatalog {
             let stopCode = fields[1].trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
             let stopName = fields[2].trimmingCharacters(in: CharacterSet.whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "\""))
             if stopId.isEmpty || stopCode.isEmpty || stopName.isEmpty { continue }
-            entries.append(StopCatalogEntry(id: stopId, code: stopCode, name: stopName))
+            let lat: Double? = fields.count > 4 ? Double(fields[4].trimmingCharacters(in: .whitespacesAndNewlines)) : nil
+            let lon: Double? = fields.count > 5 ? Double(fields[5].trimmingCharacters(in: .whitespacesAndNewlines)) : nil
+            entries.append(StopCatalogEntry(id: stopId, code: stopCode, name: stopName, lat: lat, lon: lon))
         }
 
         if entries.isEmpty && !usedFallback {
@@ -695,7 +701,7 @@ public enum StopCatalog {
                 let stopCode = fields[1].trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
                 let stopName = fields[2].trimmingCharacters(in: CharacterSet.whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "\""))
                 if stopId.isEmpty || stopCode.isEmpty || stopName.isEmpty { continue }
-                entries.append(StopCatalogEntry(id: stopId, code: stopCode, name: stopName))
+                entries.append(StopCatalogEntry(id: stopId, code: stopCode, name: stopName, lat: nil, lon: nil))
             }
             if !entries.isEmpty { usedFallback = true }
         }
