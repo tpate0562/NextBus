@@ -23,6 +23,7 @@ struct DepartureRowView: View {
     let departure: DepartureInfo
     let timeStyle: TimeDisplayStyle
     let compact: Bool
+    let entryDate: Date
 
     var body: some View {
         HStack(spacing: compact ? 3 : 6) {
@@ -96,6 +97,7 @@ struct StopColumnView: View {
     let compact: Bool
     let showHeadsign: Bool
     var refreshDate: Date? = nil
+    var entryDate: Date
 
     var body: some View {
         VStack(alignment: .leading, spacing: compact ? 3 : 5) {
@@ -107,7 +109,7 @@ struct StopColumnView: View {
                     .foregroundStyle(.primary)
                 Spacer(minLength: 2)
                 if let date = refreshDate {
-                    RefreshTimestamp(date: date)
+                    RefreshTimestamp(refreshDate: date, entryDate: entryDate)
                 }
             }
 
@@ -119,7 +121,7 @@ struct StopColumnView: View {
             } else {
                 ForEach(stopData.departures) { dep in
                     VStack(spacing: 0) {
-                        DepartureRowView(departure: dep, timeStyle: timeStyle, compact: compact)
+                        DepartureRowView(departure: dep, timeStyle: timeStyle, compact: compact, entryDate: entryDate)
                         if showHeadsign {
                             Text("→ \(dep.headsign)")
                                 .font(.system(size: compact ? 8 : 11))
@@ -139,18 +141,29 @@ struct StopColumnView: View {
 
 /// Tiny auto-updating time-since-refresh indicator for the top-left corner.
 struct RefreshTimestamp: View {
-    let date: Date
+    let refreshDate: Date
+    let entryDate: Date
 
     var body: some View {
         HStack(spacing: 2) {
             Image(systemName: "arrow.clockwise")
                 .font(.system(size: 8, weight: .medium))
-            Text(date, style: .timer)
+            Text(countupString(from: refreshDate, to: entryDate))
                 .font(.system(size: 8, weight: .medium))
                 .monospacedDigit()
         }
         .foregroundStyle(.secondary.opacity(0.7))
         .lineLimit(1)
+    }
+
+    private func countupString(from start: Date, to current: Date) -> String {
+        let interval = max(0, current.timeIntervalSince(start))
+        if interval >= 180 {
+            return ">3m"
+        }
+        let minutes = Int(interval) / 60
+        let seconds = Int(interval) % 60
+        return String(format: "%d:%02d", minutes, seconds)
     }
 }
 
@@ -185,7 +198,8 @@ struct SmallWidgetView: View {
                 timeStyle: entry.timeDisplayStyle,
                 compact: false,
                 showHeadsign: false,
-                refreshDate: entry.date
+                refreshDate: entry.refreshDate,
+                entryDate: entry.date
             )
             .padding(.horizontal, -5)
         } else {
@@ -210,7 +224,8 @@ struct MediumWidgetView: View {
                         timeStyle: entry.timeDisplayStyle,
                         compact: false,
                         showHeadsign: false,
-                        refreshDate: entry.date
+                        refreshDate: entry.refreshDate,
+                        entryDate: entry.date
                     )
                     .frame(maxWidth: .infinity)
                     .padding(.trailing, 4)
@@ -224,7 +239,8 @@ struct MediumWidgetView: View {
                         stopData: entry.stops[1],
                         timeStyle: entry.timeDisplayStyle,
                         compact: false,
-                        showHeadsign: false
+                        showHeadsign: false,
+                        entryDate: entry.date
                     )
                     .frame(maxWidth: .infinity)
                     .padding(.leading, 4)
@@ -259,7 +275,8 @@ struct LargeWidgetView: View {
                     timeStyle: entry.timeDisplayStyle,
                     compact: false,
                     showHeadsign: true,
-                    refreshDate: entry.date
+                    refreshDate: entry.refreshDate,
+                    entryDate: entry.date
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .padding(.trailing, 4)
@@ -273,7 +290,8 @@ struct LargeWidgetView: View {
                     stopData: entry.stops[1],
                     timeStyle: entry.timeDisplayStyle,
                     compact: false,
-                    showHeadsign: true
+                    showHeadsign: true,
+                    entryDate: entry.date
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .padding(.leading, 4)
@@ -293,7 +311,8 @@ struct LargeWidgetView: View {
                         timeStyle: entry.timeDisplayStyle,
                         compact: true,
                         showHeadsign: false,
-                        refreshDate: entry.date
+                        refreshDate: entry.refreshDate,
+                        entryDate: entry.date
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .padding(.trailing, 4)
@@ -306,7 +325,8 @@ struct LargeWidgetView: View {
                         stopData: entry.stops[1],
                         timeStyle: entry.timeDisplayStyle,
                         compact: true,
-                        showHeadsign: false
+                        showHeadsign: false,
+                        entryDate: entry.date
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .padding(.leading, 4)
@@ -323,7 +343,8 @@ struct LargeWidgetView: View {
                         stopData: entry.stops[2],
                         timeStyle: entry.timeDisplayStyle,
                         compact: true,
-                        showHeadsign: false
+                        showHeadsign: false,
+                        entryDate: entry.date
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .padding(.trailing, 4)
@@ -335,7 +356,8 @@ struct LargeWidgetView: View {
                             stopData: entry.stops[3],
                             timeStyle: entry.timeDisplayStyle,
                             compact: true,
-                            showHeadsign: false
+                            showHeadsign: false,
+                            entryDate: entry.date
                         )
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                         .padding(.leading, 4)
