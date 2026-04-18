@@ -127,10 +127,25 @@ func fetchDeparturesForWidget(stopIDs: [String], maxPerStop: Int = 3) async -> [
                 } else {
                     if let veh = matchVehicle(by: vid!, in: vehicleLocations) {
                         let vLoc = CLLocation(latitude: veh.latitude, longitude: veh.longitude)
-                        dist = vLoc.distance(from: stopLocation!) / 1609.344
+                        let distMeters = vLoc.distance(from: stopLocation!)
+                        dist = distMeters / 1609.344
+
+                        print("🚌 DEBUG DISTANCE — Route \(p.route) → \(label)")
+                        print("   Scraper vehicleID: \"\(vid!)\"")
+                        print("   Matched GTFS-RT vehicle: id=\"\(veh.id)\" route=\(veh.routeID ?? "nil") trip=\(veh.tripID ?? "nil")")
+                        print("   Bus coords:  lat=\(veh.latitude), lon=\(veh.longitude)")
+                        print("   Stop coords: lat=\(stopLocation!.coordinate.latitude), lon=\(stopLocation!.coordinate.longitude)")
+                        print("   Distance: \(distMeters) meters = \(dist!) miles")
+                        print("   Stop code: \(stopID), config stopLat=\(config?.stopLat as Any), config stopLon=\(config?.stopLon as Any)")
+                        if let fallback = lookupStopCoordinates(stopCode: stopID) {
+                            print("   Embedded lookup: lat=\(fallback.lat), lon=\(fallback.lon)")
+                        }
+                        print("---")
+
                         debug = String(format: "%.1f mi", dist!)
                     } else {
                         debug = "no match:\(vid!)"
+                        print("🚌 NO MATCH — Route \(p.route), scraper vid=\"\(vid!)\", total GTFS vehicles=\(vehicleLocations.count)")
                     }
                 }
 

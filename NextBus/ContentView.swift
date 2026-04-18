@@ -764,7 +764,7 @@ private struct StopLookupView: View {
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(e.name).font(.body)
-                                Text("#\(e.code)  (ID: \(e.id))").font(.caption).foregroundStyle(.secondary)
+                                Text("#\(e.code)").font(.caption).foregroundStyle(.secondary)
                             }
                             Spacer()
                             Button {
