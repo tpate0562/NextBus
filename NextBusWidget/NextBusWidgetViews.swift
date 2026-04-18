@@ -95,14 +95,21 @@ struct StopColumnView: View {
     let timeStyle: TimeDisplayStyle
     let compact: Bool
     let showHeadsign: Bool
+    var refreshDate: Date? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: compact ? 3 : 5) {
-            Text(stopData.stopLabel)
-                .font(compact ? .system(size: 11, weight: .semibold) : .system(size: 14, weight: .semibold))
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
-                .foregroundStyle(.primary)
+            HStack(spacing: 0) {
+                Text(stopData.stopLabel)
+                    .font(compact ? .system(size: 11, weight: .semibold) : .system(size: 14, weight: .semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                    .foregroundStyle(.primary)
+                Spacer(minLength: 2)
+                if let date = refreshDate {
+                    RefreshTimestamp(date: date)
+                }
+            }
 
             if stopData.departures.isEmpty {
                 Text("No departures")
@@ -137,11 +144,12 @@ struct RefreshTimestamp: View {
     var body: some View {
         HStack(spacing: 2) {
             Image(systemName: "arrow.clockwise")
-                .font(.system(size: 7))
-            Text(date, style: .relative)
-                .font(.system(size: 7))
+                .font(.system(size: 8, weight: .medium))
+            Text(date, style: .timer)
+                .font(.system(size: 8, weight: .medium))
+                .monospacedDigit()
         }
-        .foregroundStyle(.quaternary)
+        .foregroundStyle(.secondary.opacity(0.7))
         .lineLimit(1)
     }
 }
@@ -172,18 +180,14 @@ struct SmallWidgetView: View {
 
     var body: some View {
         if let stop = entry.stops.first {
-            ZStack(alignment: .topLeading) {
-                StopColumnView(
-                    stopData: stop,
-                    timeStyle: entry.timeDisplayStyle,
-                    compact: false,
-                    showHeadsign: false
-                )
-                .padding(.horizontal, -5)
-
-                RefreshTimestamp(date: entry.date)
-                    .padding(.top, -2)
-            }
+            StopColumnView(
+                stopData: stop,
+                timeStyle: entry.timeDisplayStyle,
+                compact: false,
+                showHeadsign: false,
+                refreshDate: entry.date
+            )
+            .padding(.horizontal, -5)
         } else {
             EmptyWidgetView()
         }
@@ -199,38 +203,34 @@ struct MediumWidgetView: View {
         if entry.stops.isEmpty {
             EmptyWidgetView()
         } else {
-            ZStack(alignment: .topLeading) {
-                HStack(spacing: 0) {
-                    if let first = entry.stops.first {
-                        StopColumnView(
-                            stopData: first,
-                            timeStyle: entry.timeDisplayStyle,
-                            compact: false,
-                            showHeadsign: false
-                        )
-                        .frame(maxWidth: .infinity)
-                        .padding(.trailing, 4)
-                    }
-
-                    if entry.stops.count >= 2 {
-                        Divider()
-                            .padding(.vertical, 4)
-
-                        StopColumnView(
-                            stopData: entry.stops[1],
-                            timeStyle: entry.timeDisplayStyle,
-                            compact: false,
-                            showHeadsign: false
-                        )
-                        .frame(maxWidth: .infinity)
-                        .padding(.leading, 4)
-                    }
+            HStack(spacing: 0) {
+                if let first = entry.stops.first {
+                    StopColumnView(
+                        stopData: first,
+                        timeStyle: entry.timeDisplayStyle,
+                        compact: false,
+                        showHeadsign: false,
+                        refreshDate: entry.date
+                    )
+                    .frame(maxWidth: .infinity)
+                    .padding(.trailing, 4)
                 }
-                .padding(.horizontal, 2)
 
-                RefreshTimestamp(date: entry.date)
-                    .padding(.top, -2)
+                if entry.stops.count >= 2 {
+                    Divider()
+                        .padding(.vertical, 4)
+
+                    StopColumnView(
+                        stopData: entry.stops[1],
+                        timeStyle: entry.timeDisplayStyle,
+                        compact: false,
+                        showHeadsign: false
+                    )
+                    .frame(maxWidth: .infinity)
+                    .padding(.leading, 4)
+                }
             }
+            .padding(.horizontal, 2)
         }
     }
 }
@@ -244,17 +244,9 @@ struct LargeWidgetView: View {
         if entry.stops.isEmpty {
             EmptyWidgetView()
         } else if entry.layoutStyle == .twoColumnFull {
-            ZStack(alignment: .topLeading) {
-                twoColumnFullLayout
-                RefreshTimestamp(date: entry.date)
-                    .padding(.top, -2)
-            }
+            twoColumnFullLayout
         } else {
-            ZStack(alignment: .topLeading) {
-                fourStopGridLayout
-                RefreshTimestamp(date: entry.date)
-                    .padding(.top, -2)
-            }
+            fourStopGridLayout
         }
     }
 
@@ -266,7 +258,8 @@ struct LargeWidgetView: View {
                     stopData: first,
                     timeStyle: entry.timeDisplayStyle,
                     compact: false,
-                    showHeadsign: true
+                    showHeadsign: true,
+                    refreshDate: entry.date
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .padding(.trailing, 4)
@@ -299,7 +292,8 @@ struct LargeWidgetView: View {
                         stopData: entry.stops[0],
                         timeStyle: entry.timeDisplayStyle,
                         compact: true,
-                        showHeadsign: false
+                        showHeadsign: false,
+                        refreshDate: entry.date
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .padding(.trailing, 4)
