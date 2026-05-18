@@ -120,3 +120,12 @@ struct LargeWidgetIntent: WidgetConfigurationIntent {
     @Parameter(title: "Time Display", default: .minutesUntil)
     var timeDisplay: TimeDisplayStyle
 }
+
+struct RefreshWidgetIntent: AppIntent {
+    static var title: LocalizedStringResource = "Refresh Bus Data"
+    static var description = IntentDescription("Fetches the latest bus departures via the Widget.")
+
+    func perform() async throws -> some IntentResult {
+        return .result()
+    }
+}

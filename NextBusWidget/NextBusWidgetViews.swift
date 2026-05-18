@@ -7,6 +7,7 @@
 
 import SwiftUI
 import WidgetKit
+import AppIntents
 
 // MARK: - Time Formatter
 
@@ -145,25 +146,34 @@ struct RefreshTimestamp: View {
     let entryDate: Date
 
     var body: some View {
-        HStack(spacing: 2) {
-            Image(systemName: "arrow.clockwise")
-                .font(.system(size: 8, weight: .medium))
-            Text(countupString(from: refreshDate, to: entryDate))
-                .font(.system(size: 8, weight: .medium))
-                .monospacedDigit()
+        Button(intent: RefreshWidgetIntent()) {
+            HStack(spacing: 3) {
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 10, weight: .medium))
+                
+                let interval = entryDate.timeIntervalSince(refreshDate)
+                if interval >= 60 {
+                    Text(">1m")
+                        .font(.system(size: 10, weight: .medium))
+                        .monospacedDigit()
+                } else {
+                    Text(refreshDate, style: .timer)
+                        .font(.system(size: 10, weight: .medium))
+                        .monospacedDigit()
+                        .frame(width: 26, alignment: .leading)
+                }
+            }
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 4)
+            .background(.ultraThinMaterial)
+            .clipShape(Capsule())
+            .overlay(
+                Capsule().stroke(Color.primary.opacity(0.1), lineWidth: 0.5)
+            )
         }
-        .foregroundStyle(.secondary.opacity(0.7))
-        .lineLimit(1)
-    }
-
-    private func countupString(from start: Date, to current: Date) -> String {
-        let interval = max(0, current.timeIntervalSince(start))
-        if interval >= 180 {
-            return ">3m"
-        }
-        let minutes = Int(interval) / 60
-        let seconds = Int(interval) % 60
-        return String(format: "%d:%02d", minutes, seconds)
+        .buttonStyle(.plain)
     }
 }
 

@@ -15,6 +15,7 @@ import SwiftUI
 import Combine
 import MapKit
 import CoreLocation
+import WidgetKit
 
 
 @MainActor
@@ -242,6 +243,9 @@ final class AppModel: ObservableObject {
             }
         }
         boards = next
+
+        // Force widget to update whenever the main app has fresh data
+        WidgetCenter.shared.reloadAllTimelines()
     }
 }
 

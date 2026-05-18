@@ -183,12 +183,12 @@ struct SmallWidgetProvider: AppIntentTimelineProvider {
 
     func timeline(for configuration: SmallWidgetIntent, in context: Context) async -> Timeline<NextBusEntry> {
         let baseEntry = await makeEntry(for: configuration)
-        var entries: [NextBusEntry] = []
-        for secondOffset in 0...180 {
-            let entryDate = Calendar.current.date(byAdding: .second, value: secondOffset, to: baseEntry.refreshDate) ?? baseEntry.refreshDate
-            entries.append(NextBusEntry(date: entryDate, refreshDate: baseEntry.refreshDate, stops: baseEntry.stops, timeDisplayStyle: baseEntry.timeDisplayStyle, layoutStyle: baseEntry.layoutStyle))
-        }
-        return Timeline(entries: entries, policy: .atEnd)
+        let expireDate = Calendar.current.date(byAdding: .second, value: 180, to: baseEntry.refreshDate) ?? baseEntry.refreshDate
+        
+        let entryNow = NextBusEntry(date: baseEntry.refreshDate, refreshDate: baseEntry.refreshDate, stops: baseEntry.stops, timeDisplayStyle: baseEntry.timeDisplayStyle, layoutStyle: baseEntry.layoutStyle)
+        let entryExpired = NextBusEntry(date: expireDate, refreshDate: baseEntry.refreshDate, stops: baseEntry.stops, timeDisplayStyle: baseEntry.timeDisplayStyle, layoutStyle: baseEntry.layoutStyle)
+        
+        return Timeline(entries: [entryNow, entryExpired], policy: .atEnd)
     }
 
     private func makeEntry(for config: SmallWidgetIntent) async -> NextBusEntry {
@@ -210,12 +210,12 @@ struct MediumWidgetProvider: AppIntentTimelineProvider {
 
     func timeline(for configuration: MediumWidgetIntent, in context: Context) async -> Timeline<NextBusEntry> {
         let baseEntry = await makeEntry(for: configuration)
-        var entries: [NextBusEntry] = []
-        for secondOffset in 0...180 {
-            let entryDate = Calendar.current.date(byAdding: .second, value: secondOffset, to: baseEntry.refreshDate) ?? baseEntry.refreshDate
-            entries.append(NextBusEntry(date: entryDate, refreshDate: baseEntry.refreshDate, stops: baseEntry.stops, timeDisplayStyle: baseEntry.timeDisplayStyle, layoutStyle: baseEntry.layoutStyle))
-        }
-        return Timeline(entries: entries, policy: .atEnd)
+        let expireDate = Calendar.current.date(byAdding: .second, value: 180, to: baseEntry.refreshDate) ?? baseEntry.refreshDate
+        
+        let entryNow = NextBusEntry(date: baseEntry.refreshDate, refreshDate: baseEntry.refreshDate, stops: baseEntry.stops, timeDisplayStyle: baseEntry.timeDisplayStyle, layoutStyle: baseEntry.layoutStyle)
+        let entryExpired = NextBusEntry(date: expireDate, refreshDate: baseEntry.refreshDate, stops: baseEntry.stops, timeDisplayStyle: baseEntry.timeDisplayStyle, layoutStyle: baseEntry.layoutStyle)
+        
+        return Timeline(entries: [entryNow, entryExpired], policy: .atEnd)
     }
 
     private func makeEntry(for config: MediumWidgetIntent) async -> NextBusEntry {
@@ -238,12 +238,12 @@ struct LargeWidgetProvider: AppIntentTimelineProvider {
 
     func timeline(for configuration: LargeWidgetIntent, in context: Context) async -> Timeline<NextBusEntry> {
         let baseEntry = await makeEntry(for: configuration)
-        var entries: [NextBusEntry] = []
-        for secondOffset in 0...180 {
-            let entryDate = Calendar.current.date(byAdding: .second, value: secondOffset, to: baseEntry.refreshDate) ?? baseEntry.refreshDate
-            entries.append(NextBusEntry(date: entryDate, refreshDate: baseEntry.refreshDate, stops: baseEntry.stops, timeDisplayStyle: baseEntry.timeDisplayStyle, layoutStyle: baseEntry.layoutStyle))
-        }
-        return Timeline(entries: entries, policy: .atEnd)
+        let expireDate = Calendar.current.date(byAdding: .second, value: 180, to: baseEntry.refreshDate) ?? baseEntry.refreshDate
+        
+        let entryNow = NextBusEntry(date: baseEntry.refreshDate, refreshDate: baseEntry.refreshDate, stops: baseEntry.stops, timeDisplayStyle: baseEntry.timeDisplayStyle, layoutStyle: baseEntry.layoutStyle)
+        let entryExpired = NextBusEntry(date: expireDate, refreshDate: baseEntry.refreshDate, stops: baseEntry.stops, timeDisplayStyle: baseEntry.timeDisplayStyle, layoutStyle: baseEntry.layoutStyle)
+        
+        return Timeline(entries: [entryNow, entryExpired], policy: .atEnd)
     }
 
     private func makeEntry(for config: LargeWidgetIntent) async -> NextBusEntry {
@@ -252,7 +252,7 @@ struct LargeWidgetProvider: AppIntentTimelineProvider {
             .compactMap { $0 }
             .prefix(maxStops))
         guard !ids.isEmpty else { return .emptyPlaceholder }
-        let data = await fetchDeparturesForWidget(stopIDs: ids, maxPerStop: 5)
+        let data = await fetchDeparturesForWidget(stopIDs: ids, maxPerStop: 8)
         return NextBusEntry(date: Date(), refreshDate: Date(), stops: data, timeDisplayStyle: config.timeDisplay, layoutStyle: config.layout)
     }
 }
